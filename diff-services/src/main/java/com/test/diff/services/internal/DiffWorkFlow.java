@@ -58,40 +58,49 @@ public class DiffWorkFlow {
         //获取base repository
         BaseRepository baseRepository = initRepository(projectInfo);
 
-        Git baseGit,newGit;
+        Git baseGit = null,newGit = null;
         AbstractTreeIterator baseTree, newTree;
-        switch (DiffTypeEnum.getDiffTypeByCode(params.getDiffTypeCode())){
-            case BRANCH_DIFF:
-                baseGit = syncCode(baseRepository, projectInfo, params.getOldVersion(), "", true);
-                newGit = syncCode(baseRepository, projectInfo, params.getNewVersion(), "", true);
-                baseTree = baseRepository.prepareTreeParser(baseGit.getRepository(), params.getOldVersion());
-                newTree = baseRepository.prepareTreeParser(newGit.getRepository(), params.getNewVersion());
-                break;
-            case COMMIT_DIFF:
-                baseGit = syncCode(baseRepository, projectInfo, params.getNewVersion(),
-                        params.getOldCommitId(), false);
-                newGit = syncCode(baseRepository, projectInfo, params.getNewVersion(),
-                        params.getNewCommitId(), false);
-                baseTree = baseRepository.prepareTreeParser(baseGit.getRepository(), params.getOldCommitId());
-                newTree = baseRepository.prepareTreeParser(newGit.getRepository(), params.getNewCommitId());
-                break;
-            default:
-                throw new BizException(StatusCode.DIFF_TYPE_ERROR);
+        try {
+            switch (DiffTypeEnum.getDiffTypeByCode(params.getDiffTypeCode())) {
+                case BRANCH_DIFF:
+                    baseGit = syncCode(baseRepository, projectInfo, params.getOldVersion(), "", true);
+                    newGit = syncCode(baseRepository, projectInfo, params.getNewVersion(), "", true);
+                    baseTree = baseRepository.prepareTreeParser(baseGit.getRepository(), params.getOldVersion());
+                    newTree = baseRepository.prepareTreeParser(newGit.getRepository(), params.getNewVersion());
+                    break;
+                case COMMIT_DIFF:
+                    baseGit = syncCode(baseRepository, projectInfo, params.getNewVersion(),
+                            params.getOldCommitId(), false);
+                    newGit = syncCode(baseRepository, projectInfo, params.getNewVersion(),
+                            params.getNewCommitId(), false);
+                    baseTree = baseRepository.prepareTreeParser(baseGit.getRepository(), params.getOldCommitId());
+                    newTree = baseRepository.prepareTreeParser(newGit.getRepository(), params.getNewCommitId());
+                    break;
+                default:
+                    throw new BizException(StatusCode.DIFF_TYPE_ERROR);
+            }
+            List<DiffEntry> list = getDiffCodeClasses(newGit, baseTree, newTree);
+            newGit.close();
+            baseGit.close();
+
+            log.info("需要比对的类个数：{}", list.size());
+
+            Git finalBaseGit = baseGit;
+            Git finalNewGit = newGit;
+            List<CompletableFuture<ClassInfo>> futures = list.stream()
+                    .map(diffEntry -> diffHandle(diffEntry, getFilePath(finalBaseGit, diffEntry.getOldPath()),
+                            getFilePath(finalNewGit, diffEntry.getNewPath())))
+                    .collect(Collectors.toList());
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+            List<ClassInfo> classInfos = futures.stream().map(CompletableFuture::join).filter(Objects::nonNull).collect(Collectors.toList());
+            log.info("计算最终差异类个数：{}", classInfos.size());
+
+            return classInfos;
+        } finally {
+            if (baseGit != null) baseGit.close();
+            if (newGit != null) newGit.close();
         }
-        List<DiffEntry> list = getDiffCodeClasses(newGit, baseTree, newTree);
-
-        log.info("需要比对的类个数：{}", list.size());
-
-        List<CompletableFuture<ClassInfo>> futures = list.stream()
-                .map(diffEntry -> diffHandle(diffEntry, getFilePath(baseGit, diffEntry.getOldPath()),
-                        getFilePath(newGit, diffEntry.getNewPath())))
-                .collect(Collectors.toList());
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
-        List<ClassInfo> classInfos = futures.stream().map(CompletableFuture::join).filter(Objects::nonNull).collect(Collectors.toList());
-        log.info("计算最终差异类个数：{}", classInfos.size());
-
-        return classInfos;
     }
 
     private BaseRepository initRepository(ProjectInfo projectInfo){
@@ -160,7 +169,7 @@ public class DiffWorkFlow {
         //这里直接生成路径
         String branch_path = fileUtil.getRepoPath(projectInfo, branch);
         if(!isBranchDiff){
-            branch_path = branch_path + "_" + commitId;
+            branch_path = branch_path + "_" + commitId + File.separator + "source";
         }
         return updateCode(baseRepository, branch_path,
                 projectInfo.getProjectName(),projectInfo.getProjectUrl(), branch, commitId, isBranchDiff);
@@ -208,6 +217,12 @@ public class DiffWorkFlow {
         if(new File(path).exists()){
             if(this.threadLocal.get().isUpdateCode() && isBranchDiff){
                 repository.pull(gitPath, branch);
+            }
+            if (!new File(gitPath).exists()) {
+                //不存在就先克隆项目
+                repository.clone(projectUrl, path, branch);
+                //然后再回退到指定commit id 版本
+                repository.pullByCommitId(gitPath, branch, commitId);
             }
             return new Git(new FileRepository(gitPath));
         }
