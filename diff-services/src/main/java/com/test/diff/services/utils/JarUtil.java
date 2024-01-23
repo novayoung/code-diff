@@ -31,7 +31,6 @@ public class JarUtil {
     public static void uncompress(File jarFile, File tarDir) {
         Set<String> prefixes = new HashSet<>();
         prefixes.add("BOOT-INF");
-        prefixes.add("com/intramirror");
         uncompress(jarFile, tarDir, prefixes);
     }
 
