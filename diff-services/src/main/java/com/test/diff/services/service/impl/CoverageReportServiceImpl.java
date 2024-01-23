@@ -1,14 +1,12 @@
 package com.test.diff.services.service.impl;
 
+import cn.hutool.http.HttpUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import com.test.diff.common.util.CollectionUtil;
 import com.test.diff.common.util.JacksonUtil;
 import com.test.diff.services.base.controller.result.BaseResult;
-import com.test.diff.services.consts.FileConst;
-import com.test.diff.services.consts.GitConst;
 import com.test.diff.services.consts.JacocoConst;
-import com.test.diff.services.convert.ModelConvert;
 import com.test.diff.services.entity.CoverageApp;
 import com.test.diff.services.entity.CoverageReport;
 import com.test.diff.services.entity.ProjectInfo;
@@ -18,22 +16,18 @@ import com.test.diff.services.enums.ReportTypeEnum;
 import com.test.diff.services.enums.StatusCode;
 import com.test.diff.services.internal.DiffWorkFlow;
 import com.test.diff.services.internal.jacoco.JacocoHandle;
-import com.test.diff.services.params.ProjectDiffParams;
-import com.test.diff.services.params.ReportParams;
+import com.test.diff.services.mapper.CoverageReportMapper;
+import com.test.diff.services.params.*;
 import com.test.diff.services.service.CoverageAppService;
 import com.test.diff.services.service.CoverageReportService;
-import com.test.diff.services.mapper.CoverageReportMapper;
 import com.test.diff.services.service.ProjectInfoService;
 import com.test.diff.services.utils.CommonUtil;
 import com.test.diff.services.utils.FileUtil;
+import com.test.diff.services.utils.JarUtil;
 import com.test.diff.services.utils.WildcardMatcher;
-import com.test.diff.services.vo.ProjectVo;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.ibatis.annotations.Result;
-import org.jacoco.cli.internal.JacocoApi;
 import org.jacoco.cli.internal.core.tools.ExecFileLoader;
-import org.slf4j.Logger;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
@@ -41,7 +35,7 @@ import org.springframework.util.CollectionUtils;
 import javax.annotation.Resource;
 import java.io.File;
 import java.util.*;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 @Service
@@ -68,10 +62,10 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
     private DiffWorkFlow diffWorkFlow;
 
     @Override
-    public int create(int projectId) {
+    public int create(int projectId, String uuid) {
         CoverageReport report = new CoverageReport();
         report.setProjectId(projectId);
-        report.setUuid(CommonUtil.getUUID());
+        report.setUuid(uuid);
         report.setAddTime(new Date());
         report.setLastTime(new Date());
         return coverageReportMapper.insert(report);
@@ -118,8 +112,13 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
         CoverageReport report = selectUsedByProjectId(params.getProjectId());
         //没有使用中的记录，说明没有点开始收集，而是直接点击生成报告。所以先创建一条使用的report记录
         if(Objects.isNull(report)){
-            create(params.getProjectId());
+            String uuid = CommonUtil.getUUID();
+            create(params.getProjectId(), uuid);
+            report = selectByUUid(uuid);
+            report.setIsUsed(true);
+            saveOrUpdate(report);
         }
+
         //最后收集合并一次数据
         projectInfoService.pullExecData(projectInfo);
 
@@ -127,13 +126,14 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
         String uuidDir = fileUtil.getRepoPath(projectInfo, report.getUuid());
         String execFilePath = fileUtil.addPath(uuidDir, JacocoConst.DEFAULT_EXEC_FILE_NAME);
         ExecFileLoader loader = JacocoHandle.getLoader(execFilePath);
-        String branch = JacocoHandle.getBranchName(loader);
+        String classBranch = JacocoHandle.getBranchName(loader);
         String commitId = JacocoHandle.getCommitId(loader);
-        log.info("获取分支：{}，commit id:{}", branch, commitId);
 
-        String branchDir = fileUtil.addPath(fileUtil.getRepoPath(projectInfo, branch+"_"+commitId));
-        List<String> sourcePaths = fileUtil.getAllSourcePathsByProject(branchDir);
-        List<String> classFilePaths = fileUtil.getAllClassFilePathsByProject(branchDir);
+        String sourceBranch = params.getNewVersion();
+        if (StringUtils.isBlank(sourceBranch)) {
+            sourceBranch = classBranch;
+        }
+        log.info("获取分支：{}，commit id:{}", sourceBranch, commitId);
 
         try {
             String diffResult = null;
@@ -141,12 +141,13 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
                 ProjectDiffParams diffParams = new ProjectDiffParams();
                 diffParams.setId(params.getProjectId());
                 diffParams.setDiffTypeCode(params.getDiffType());
+                diffParams.setUpdateCode(true);
                 //分支diff
                 if(params.getDiffType() == DiffTypeEnum.BRANCH_DIFF.getCode()){
                     log.info("开始生成分支diff的增量报告...");
                     diffParams.setOldVersion(params.getOldVersion());
-                    diffParams.setNewVersion(branch);
-                    report.setNewBranch(branch);
+                    diffParams.setNewVersion(sourceBranch);
+                    report.setNewBranch(sourceBranch);
                     report.setOldBranch(params.getOldVersion());
                     report.setReportType(ReportTypeEnum.INCREMENT.getCode());
                     report.setDiffType(DiffTypeEnum.BRANCH_DIFF.getCode());
@@ -154,8 +155,8 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
                 //commit diff；暂时不考虑diff类型不存在的情况
                 else{
                     log.info("开始生成commitId diff的增量报告...");
-                    diffParams.setOldVersion(branch);
-                    diffParams.setNewVersion(branch);
+                    diffParams.setOldVersion(sourceBranch);
+                    diffParams.setNewVersion(sourceBranch);
                     diffParams.setOldCommitId(params.getOldVersion());
                     diffParams.setNewCommitId(commitId);
                     //----------更新report
@@ -167,12 +168,20 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
                 diffResult = JacksonUtil.serialize(diffWorkFlow.diff(diffParams));
             }
             else{
-                report.setNewBranch(branch);
+                report.setNewBranch(sourceBranch);
                 report.setReportType(ReportTypeEnum.FULL.getCode());
             }
             //获取匹配规则
             List<String> filters = getAppFilterRules(projectInfo.getId());
             String filterRules = JacksonUtil.serialize(filters);
+
+            String sourceBranchDir = fileUtil.addPath(fileUtil.getRepoPath(projectInfo, sourceBranch));
+            String classBranchDir = fileUtil.addPath(fileUtil.getRepoPath(projectInfo, classBranch+"_"+commitId));
+
+            downloadClasses(projectInfo.getId(), classBranchDir);
+
+            List<String> sourcePaths = fileUtil.getAllSourcePathsByProject(sourceBranchDir);
+            List<String> classFilePaths = fileUtil.getAllClassFilePathsByProject(classBranchDir);
 
             JacocoHandle.report(execFilePath, classFilePaths, sourcePaths, uuidDir, diffResult, filterRules);
             log.info("报告生成完成！");
@@ -192,6 +201,58 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
         return BaseResult.success("操作成功");
     }
 
+    private CoverageReport selectByUUid(String uuid) {
+        LambdaQueryWrapper<CoverageReport> query = new LambdaQueryWrapper<>();
+        query.eq(CoverageReport::getUuid, uuid);
+        return coverageReportMapper.selectOne(query);
+
+    }
+
+    public void downloadClasses(Long projectId, String classBranchDir) {
+        List<CoverageApp> coverageApps = coverageAppService.getListByProjectId(projectId);
+        for(CoverageApp coverageApp : coverageApps) {
+            String instanceIp = coverageApp.getHost();
+            downloadAndExtract(instanceIp, classBranchDir);
+        }
+    }
+
+    private static void downloadAndExtract(String instanceIp, String classBranchDir) {
+        String url = "http://" + instanceIp + ":6400/im-svc";
+        List<String> jars = Arrays.stream(HttpUtil.get(url).split("\n")).filter(s -> s.endsWith(".jar") && !s.contains("jmx_prometheus_javaagent")).collect(Collectors.toList());
+        for (String jar : jars) {
+            String jarFile = classBranchDir + File.separator + "class-" + jar;
+            String jarDir = jarFile.substring(0, jarFile.lastIndexOf("."));
+
+            if (new File(jarDir).exists()) {
+                continue;
+            }
+            cn.hutool.core.io.FileUtil.del(jarFile);
+            HttpUtil.downloadFile(url + "/" + jar, jarFile);
+            cn.hutool.core.io.FileUtil.del(new File(jarDir));
+            JarUtil.uncompress(new File(jarFile), new File(jarDir));
+            cn.hutool.core.io.FileUtil.del(jarFile);
+            String libDir = jarDir + File.separator + "BOOT-INF" + File.separator + "lib";
+            File libFile = new File(libDir);
+            if (libFile.exists()) {
+                String libClassDir = jarDir + File.separator  + "libclass";
+                cn.hutool.core.io.FileUtil.mkdir(libClassDir);
+                if (libFile.listFiles() == null) {
+                    return;
+                }
+                for (File libJarFile : Objects.requireNonNull(libFile.listFiles())) {
+                    String libJarFileName = libJarFile.getName();
+                    if (!libJarFileName.endsWith(".jar")) {
+                        continue;
+                    }
+                    String libJarClassDir = libClassDir + File.separator + libJarFileName.substring(0, libJarFileName.lastIndexOf("."));
+                    cn.hutool.core.io.FileUtil.mkdir(libJarClassDir);
+                    JarUtil.uncompress(libJarFile, new File(libJarClassDir + File.separator + "classes"));
+                }
+                cn.hutool.core.io.FileUtil.del(libDir);
+            }
+        }
+    }
+
     @Override
     public BaseResult getReportURI(long projectId) {
         ProjectInfo projectInfo = projectInfoService.getById(projectId);
@@ -205,7 +266,7 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
                 return BaseResult.error(StatusCode.REPORT_NOT_EXISTS);
             }
             CoverageReport lastReport = historyReports.get(historyReports.size()-1);
-            if(StringUtils.isEmpty(lastReport.getReportUri())){
+            if(StringUtils.isEmpty(lastReport.getReportUri())) {
                 return BaseResult.error(StatusCode.REPORT_NOT_EXISTS, "最新报告记录未生成或生成失败");
             }
             return BaseResult.success(reportDomain + lastReport.getReportUri() + "/index.html");
@@ -215,6 +276,90 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
         }
         //返回路径不考虑是windows路径
         return BaseResult.success(reportDomain + report.getReportUri() + "/index.html");
+    }
+
+    private final Map<String, Long> jarTimestampMap = new HashMap<>();
+
+    @Override
+    public BaseResult reportIm(ReportImParams params) {
+        /*
+         * 如果数据库不存在则创建记录
+         */
+        Long projectId;
+        Page<ProjectInfo> pages =  projectInfoService.selectListByParams(ListProjectParams.builder().env(params.getEnv()).projectGroup(params.getGroup()).projectName(params.getService()).page(1).size(10).build());
+        if (pages.getRecords().isEmpty()) {
+            ProjectInfo projectInfo = new ProjectInfo();
+            projectInfo.setAddTime(new Date());
+            projectInfo.setCollectStatus(0);
+            projectInfo.setEnv(params.getEnv());
+            projectInfo.setIsDelete(false);
+            projectInfo.setIsDisable(false);
+            projectInfo.setLastTime(new Date());
+            projectInfo.setProjectGroup(params.getGroup());
+            projectInfo.setProjectName(params.getService());
+            projectInfo.setProjectUrl(params.getGitUrl());
+            projectInfo.setRepoId(1);
+            projectInfo.setReportStatus(0);
+
+            projectId = projectInfoService.create(projectInfo);
+
+            for (ReportImAppParam reportImAppParam : params.getApps()) {
+                CoverageApp coverageApp = new CoverageApp();
+                coverageApp.setAddTime(new Date());
+                coverageApp.setAppName(reportImAppParam.getName());
+                coverageApp.setExcludes(reportImAppParam.getExcludes());
+                coverageApp.setHost(reportImAppParam.getHost());
+                coverageApp.setIncludes(reportImAppParam.getIncludes());
+                coverageApp.setIsDelete(false);
+                coverageApp.setStatus(true);
+                coverageApp.setIsDisable(false);
+                coverageApp.setLastTime(new Date());
+                coverageApp.setPort(reportImAppParam.getPort());
+                coverageApp.setProjectId(projectId.intValue());
+                coverageAppService.save(coverageApp);
+            }
+        } else {
+            ProjectInfo projectInfo = pages.getRecords().get(0);
+            projectInfo.setCollectStatus(0);
+            projectInfo.setEnv(params.getEnv());
+            projectInfo.setIsDelete(false);
+            projectInfo.setIsDisable(false);
+            projectInfo.setLastTime(new Date());
+            projectInfo.setProjectGroup(params.getGroup());
+            projectInfo.setProjectName(params.getService());
+            projectInfo.setProjectUrl(params.getGitUrl());
+            projectInfo.setRepoId(1);
+            projectInfo.setReportStatus(0);
+            projectId = projectInfo.getId();
+            projectInfoService.saveOrUpdate(projectInfo);
+            List<CoverageApp> coverageApps = coverageAppService.getListByProjectId(projectInfo.getId());
+            for (int i = 0; i < coverageApps.size(); i++) {
+                CoverageApp coverageApp = coverageApps.get(i);
+                ReportImAppParam appParam = params.getApps().get(i);
+                coverageApp.setHost(appParam.getHost());
+                coverageApp.setPort(appParam.getPort());
+                coverageApp.setIncludes(appParam.getIncludes());
+                coverageApp.setExcludes(appParam.getExcludes());
+                coverageApp.setLastTime(new Date());
+                coverageAppService.saveOrUpdate(coverageApp);
+            }
+        }
+
+        /*
+         * 调用 api 生成报告
+         */
+        ReportParams reportParams = new ReportParams();
+        reportParams.setProjectId(projectId.intValue());
+        reportParams.setDiffType(DiffTypeEnum.BRANCH_DIFF.getCode());
+        reportParams.setNewVersion(params.getFeatureBranch());
+        reportParams.setOldVersion(params.getBaseBranch());
+        reportParams.setReportType(params.getFull() == null || params.getFull() != 1 ? 1 : 0);
+
+        BaseResult baseResult = report(reportParams);
+        if (baseResult.getCode() == StatusCode.SUCCESS.getCode()) {
+            //todo clear history ?
+        }
+        return baseResult;
     }
 
     /**

@@ -31,7 +31,7 @@ public class ScheduledConfig {
      * 周一到周五，9-22点内每半小时获取一次数据
      */
 //    @Scheduled(cron = "0 0/30 9-22 ? * MON-FRI")
-    @Scheduled(cron = "0 0/30 9-22 * * ?")
+//    @Scheduled(cron = "0 0/30 9-22 * * ?")
     public void pullJacocoData(){
         log.info("开始轮询拉取探针数据...,需要轮询工程总数：{}", projectInfoService.getCollectProject().size());
         projectInfoService.getCollectProject().stream()

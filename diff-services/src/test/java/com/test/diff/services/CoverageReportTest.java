@@ -3,6 +3,7 @@ package com.test.diff.services;
 import com.test.diff.services.entity.CoverageReport;
 import com.test.diff.services.service.CoverageReportService;
 import com.test.diff.services.service.impl.CoverageReportServiceImpl;
+import com.test.diff.services.utils.CommonUtil;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -22,7 +23,8 @@ public class CoverageReportTest {
 
     @Test
     public void testInsert(){
-        coverageReportService.create(1);
+        String uuid = CommonUtil.getUUID();
+        coverageReportService.create(1, uuid);
     }
 
     @Test

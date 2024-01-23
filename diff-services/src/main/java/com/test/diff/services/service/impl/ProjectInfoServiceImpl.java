@@ -89,7 +89,7 @@ public class ProjectInfoServiceImpl extends ServiceImpl<ProjectInfoMapper, Proje
             return;
         }
         projectVo.getApps().stream()
-                .filter(coverageApp -> coverageApp.getStatus())
+                .filter(CoverageApp::getStatus)
                 .forEach(coverageApp -> {
                     pullSingleExec(projectInfo, coverageApp, report);
                 });
@@ -206,8 +206,9 @@ public class ProjectInfoServiceImpl extends ServiceImpl<ProjectInfoMapper, Proje
         String commit = JacocoHandle.getCommitId(loader);
         String branchPath = fileUtil.getRepoPath(projectInfo, branch+"_"+commit);
         if(!fileUtil.isExist(branchPath)){
-            log.error("{}文件夹不存在", branchPath);
-            throw new RuntimeException(branchPath+"文件夹不存在");
+            fileUtil.createDir(branchPath);
+//            log.error("{}文件夹不存在", branchPath);
+//            throw new RuntimeException(branchPath+"文件夹不存在");
         }
         return branchPath;
     }
@@ -224,6 +225,15 @@ public class ProjectInfoServiceImpl extends ServiceImpl<ProjectInfoMapper, Proje
         LambdaQueryWrapper<ProjectInfo> query = new LambdaQueryWrapper<>();
         if(params.getProjectId() != 0){
             query.eq(ProjectInfo::getId, params.getProjectId());
+        }
+        if (params.getEnv() != null) {
+            query.eq(ProjectInfo::getEnv, params.getEnv());
+        }
+        if (params.getProjectGroup() != null) {
+            query.eq(ProjectInfo::getProjectGroup, params.getProjectGroup());
+        }
+        if (params.getProjectName() != null) {
+            query.eq(ProjectInfo::getProjectName, params.getProjectName());
         }
         return projectInfoMapper.selectPage(new Page<>(params.getPage(), params.getSize()), query);
     }

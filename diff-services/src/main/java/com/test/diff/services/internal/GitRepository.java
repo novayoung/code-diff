@@ -77,6 +77,7 @@ public class GitRepository extends BaseRepository {
                 .setCredentialsProvider(new UsernamePasswordCredentialsProvider(super.getRepoInfo().getUserName(),
                         super.getRepoInfo().getPasswd()))
                 .call();
+            git.close();
         } catch (GitAPIException e) {
             e.printStackTrace();
             log.error("拉取代码失败，git path: {}", local_git_path, e);
@@ -111,6 +112,7 @@ public class GitRepository extends BaseRepository {
                     .setMode(ResetCommand.ResetType.HARD)
                     .setRef(commitId)
                     .call();
+            git.close();
         } catch (GitAPIException e) {
             e.printStackTrace();
             log.error("{}分支回滚代码到commit id: {} 失败", local_git_path, commitId, e);
@@ -139,6 +141,8 @@ public class GitRepository extends BaseRepository {
             e.printStackTrace();
             log.error("获取本地分支列表失败", e);
             throw new GitException(StatusCode.GIT_LOCAL_BRANCH_ERROR);
+        } finally {
+            git.close();
         }
     }
 
@@ -154,6 +158,8 @@ public class GitRepository extends BaseRepository {
             e.printStackTrace();
             log.error("获取本地tag列表失败", e);
             throw new GitException(StatusCode.GIT_LOCAL_TAG_ERROR);
+        } finally {
+            git.close();
         }
     }
 

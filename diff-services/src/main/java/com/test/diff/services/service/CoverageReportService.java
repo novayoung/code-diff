@@ -1,9 +1,9 @@
 package com.test.diff.services.service;
 
-import com.test.diff.services.entity.CoverageReport;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.test.diff.services.base.controller.result.BaseResult;
-import com.test.diff.services.params.ProjectDiffParams;
+import com.test.diff.services.entity.CoverageReport;
+import com.test.diff.services.params.ReportImParams;
 import com.test.diff.services.params.ReportParams;
 
 import java.util.List;
@@ -19,7 +19,7 @@ public interface CoverageReportService extends IService<CoverageReport> {
      * @param projectId
      * @return 返回id
      */
-    int create(int projectId);
+    int create(int projectId, String uuid);
 
     /**
      * 指定项目收集中{@link CoverageReport#getIsUsed()}的报告记录
@@ -51,4 +51,11 @@ public interface CoverageReportService extends IService<CoverageReport> {
      * @return
      */
     BaseResult getReportURI(long projectId);
+
+    /**
+     * 实时生成报告, 无需数据库
+     * @param params
+     * @return
+     */
+    BaseResult reportIm(ReportImParams params);
 }

@@ -120,6 +120,9 @@ public class FileUtil {
         List<String> files = getAllClassFilePathsByProject(rootPath);
         for(String file : files){
             path = findClassFileByKey(new File(file), key);
+            if (path != null) {
+                break;
+            }
         }
         return path;
     }

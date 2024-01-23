@@ -6,13 +6,11 @@ import com.test.diff.services.entity.CoverageApp;
 import com.test.diff.services.entity.CoverageReport;
 import com.test.diff.services.entity.ProjectInfo;
 import com.test.diff.services.enums.*;
-import com.test.diff.services.params.CollectParams;
-import com.test.diff.services.params.ListProjectParams;
-import com.test.diff.services.params.ProjectDiffParams;
-import com.test.diff.services.params.ReportParams;
+import com.test.diff.services.params.*;
 import com.test.diff.services.service.CoverageAppService;
 import com.test.diff.services.service.CoverageReportService;
 import com.test.diff.services.service.ProjectInfoService;
+import com.test.diff.services.utils.CommonUtil;
 import com.test.diff.services.vo.ProjectVo;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -131,6 +129,10 @@ public class WebSiteController {
         return coverageReportService.getReportURI(projectId);
     }
 
+    @PostMapping(value = "/generate/reportIm", produces = "application/json;charset=UTF-8")
+    public BaseResult generateReportIm(@Validated  @RequestBody ReportImParams params){
+        return coverageReportService.reportIm(params);
+    }
 
     /**
      * 开始或继续收集
@@ -146,7 +148,8 @@ public class WebSiteController {
         synchronized (this){
             CoverageReport report = coverageReportService.selectUsedByProjectId(projectId);
             if(Objects.isNull(report)){
-                coverageReportService.create(projectId);
+                String uuid = CommonUtil.getUUID();
+                coverageReportService.create(projectId, uuid);
             }
         }
         for(CoverageApp app : apps){

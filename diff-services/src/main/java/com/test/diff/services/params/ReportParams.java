@@ -1,8 +1,6 @@
 package com.test.diff.services.params;
 
-import lombok.Builder;
-import lombok.Getter;
-import lombok.Setter;
+import lombok.*;
 
 import javax.validation.constraints.NotEmpty;
 import javax.validation.constraints.NotNull;
@@ -15,6 +13,8 @@ import java.util.List;
 @Getter
 @Setter
 @Builder
+@AllArgsConstructor
+@NoArgsConstructor
 public class ReportParams implements Serializable {
     private static final long serialVersionUID = 1L;
 
@@ -40,6 +40,9 @@ public class ReportParams implements Serializable {
      */
     private String oldVersion;
 
-
+    /**
+     * 变更分支
+     */
+    private String newVersion;
 
 }

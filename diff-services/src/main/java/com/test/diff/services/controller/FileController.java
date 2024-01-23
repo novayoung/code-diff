@@ -8,6 +8,7 @@ import com.test.diff.services.internal.source.SourceFileHandleFactory;
 import com.test.diff.services.params.CloneParamDto;
 import com.test.diff.services.params.FileParams;
 import com.test.diff.services.service.ProjectInfoService;
+import com.test.diff.services.service.impl.CoverageReportServiceImpl;
 import com.test.diff.services.task.CloneProjectTask;
 import com.test.diff.services.utils.FileUtil;
 import lombok.extern.slf4j.Slf4j;
@@ -37,6 +38,9 @@ public class FileController {
     private FileUtil fileUtil;
 
     @Resource
+    private CoverageReportServiceImpl coverageReportService;
+
+    @Resource
     private CloneProjectTask cloneProjectTask;
 
     @PostMapping(value = "/class/path", produces = "application/json;charset=UTF-8")
@@ -48,6 +52,7 @@ public class FileController {
         String repoPath;
         if(StringUtils.isNotBlank(fileParams.getCommitId())){
             repoPath = fileUtil.getRepoCommitPath(projectInfo, fileParams.getBranch(), fileParams.getCommitId());
+            coverageReportService.downloadClasses(projectInfo.getId(), repoPath);
         }else{
             repoPath =  fileUtil.getRepoPath(projectInfo, fileParams.getBranch());
         }
