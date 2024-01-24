@@ -1,16 +1,12 @@
 package com.test.diff.services.controller;
 
 import com.test.diff.services.base.controller.result.BaseResult;
-import com.test.diff.services.entity.CoverageReport;
 import com.test.diff.services.entity.ProjectInfo;
 import com.test.diff.services.entity.RepoInfo;
 import com.test.diff.services.enums.StatusCode;
 import com.test.diff.services.internal.BaseRepository;
-import com.test.diff.services.internal.DiffWorkFlow;
 import com.test.diff.services.internal.RepositoryFactory;
-import com.test.diff.services.params.ProjectBranchParams;
 import com.test.diff.services.params.ProjectParams;
-import com.test.diff.services.service.CoverageReportService;
 import com.test.diff.services.service.ProjectInfoService;
 import com.test.diff.services.service.RepoInfoService;
 import com.test.diff.services.utils.FileUtil;
@@ -52,7 +48,7 @@ public class GitController {
         BaseRepository repository = RepositoryFactory.create(repoInfo);
         String path = fileUtil.getRepoPath(projectInfo, DEFAULT_BRANCH);
         if(!fileUtil.isExist(path)){
-            repository.clone(projectInfo.getProjectUrl(), path, DEFAULT_BRANCH);
+            repository.clone(projectInfo.getProjectUrl(), path, DEFAULT_BRANCH).close();
         }
         String gitPath = fileUtil.addPath(path, ".git");
         List<String> branchList = repository.lsLocalBranchList(gitPath);
@@ -70,7 +66,7 @@ public class GitController {
         String path = fileUtil.getRepoPath(projectInfo, DEFAULT_BRANCH);
         String gitPath = fileUtil.addPath(path, ".git");
         if(!fileUtil.isExist(path)){
-            repository.clone(projectInfo.getProjectUrl(), path, DEFAULT_BRANCH);
+            repository.clone(projectInfo.getProjectUrl(), path, DEFAULT_BRANCH).close();
         }else{
             repository.pull(gitPath, DEFAULT_BRANCH);
         }

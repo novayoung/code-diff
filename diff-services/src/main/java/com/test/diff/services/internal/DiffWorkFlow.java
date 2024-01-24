@@ -14,10 +14,10 @@ import com.test.diff.services.service.ProjectInfoService;
 import com.test.diff.services.service.RepoInfoService;
 import com.test.diff.services.utils.FileUtil;
 import lombok.extern.slf4j.Slf4j;
+import org.eclipse.jgit.api.DiffCommand;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.diff.DiffEntry;
-import org.eclipse.jgit.internal.storage.file.FileRepository;
 import org.eclipse.jgit.treewalk.AbstractTreeIterator;
 import org.springframework.stereotype.Component;
 
@@ -80,9 +80,7 @@ public class DiffWorkFlow {
                     throw new BizException(StatusCode.DIFF_TYPE_ERROR);
             }
             List<DiffEntry> list = getDiffCodeClasses(newGit, baseTree, newTree);
-            newGit.close();
-            baseGit.close();
-
+            newGit.getRepository().getRefDatabase().close();
             log.info("需要比对的类个数：{}", list.size());
 
             Git finalBaseGit = baseGit;
@@ -149,8 +147,8 @@ public class DiffWorkFlow {
      */
     private List<DiffEntry> getDiffCodeClasses(Git newGit,AbstractTreeIterator baseTree,
                                                AbstractTreeIterator newTree) throws GitAPIException {
-        List<DiffEntry> list;
-        list = newGit.diff().setOldTree(baseTree).setNewTree(newTree).setShowNameAndStatusOnly(true).call();
+        DiffCommand diff = newGit.diff();
+        List<DiffEntry> list = diff.setOldTree(baseTree).setNewTree(newTree).setShowNameAndStatusOnly(true).call();
         return list.stream()
                 //只计算java文件
                 .filter(diffEntry -> diffEntry.getNewPath().endsWith(GitConst.JAVA_FILE_SUFFIX))
@@ -218,23 +216,26 @@ public class DiffWorkFlow {
             if(this.threadLocal.get().isUpdateCode() && isBranchDiff){
                 repository.pull(gitPath, branch);
             }
+            Git git;
             if (!new File(gitPath).exists()) {
                 //不存在就先克隆项目
-                repository.clone(projectUrl, path, branch);
+                git = repository.clone(projectUrl, path, branch);
                 //然后再回退到指定commit id 版本
                 repository.pullByCommitId(gitPath, branch, commitId);
+            } else {
+                git = GitRepository.getGit(gitPath);
             }
-            return new Git(new FileRepository(gitPath));
+            return git;
         }
         if(isBranchDiff){
             return repository.clone(projectUrl, path, branch);
         }else{
             //不存在就先克隆项目
-            repository.clone(projectUrl, path, branch);
+            Git git = repository.clone(projectUrl, path, branch);
             //然后再回退到指定commit id 版本
             repository.pullByCommitId(gitPath, branch, commitId);
             //最后返回Git对象
-            return new Git(new FileRepository(gitPath));
+            return git;
         }
 
     }

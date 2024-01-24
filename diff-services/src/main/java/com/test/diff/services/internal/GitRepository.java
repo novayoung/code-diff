@@ -70,14 +70,12 @@ public class GitRepository extends BaseRepository {
         if(!local_git_path.endsWith(GitConst.GIT_FILE_SUFFIX)){
             throw new FileException(StatusCode.FILE_GIT_FILE_ERROR);
         }
-        try {
-            Git git = getGit(local_git_path);
+        try(Git git = getGit(local_git_path)) {
             git.pull()
                 .setRemoteBranchName(branch)
                 .setCredentialsProvider(new UsernamePasswordCredentialsProvider(super.getRepoInfo().getUserName(),
                         super.getRepoInfo().getPasswd()))
                 .call();
-            git.close();
         } catch (GitAPIException e) {
             e.printStackTrace();
             log.error("拉取代码失败，git path: {}", local_git_path, e);
@@ -85,26 +83,25 @@ public class GitRepository extends BaseRepository {
         }
     }
 
-    private Git getGit(String localGitPath)  {
+    public static Git getGit(String localGitPath)  {
         File gitFile = new File(localGitPath);
         if(!gitFile.exists()){
             throw new FileException(localGitPath+"对应分支.git文件不存在，请先clone到本地");
         }
         Git git;
         try {
-            git = new Git(new FileRepository(localGitPath));
+            git =  Git.open(new File(localGitPath)); //new Git(new FileRepository(localGitPath));
         } catch (IOException e) {
             e.printStackTrace();
             log.error("获取git对象失败，git path: {}", localGitPath, e);
             throw new GitException(StatusCode.GIT_PULL_CODE_ERROR);
         }
-        return  git;
+        return git;
     }
 
     @Override
     public void pullByCommitId(String local_git_path, String branch, String commitId)  {
-        try {
-            Git git = getGit(local_git_path);
+        try(Git git = getGit(local_git_path)) {
             //先拉取最新的代码
             pull(local_git_path, branch);
             //回滚到指定的commit id 版本
@@ -112,7 +109,6 @@ public class GitRepository extends BaseRepository {
                     .setMode(ResetCommand.ResetType.HARD)
                     .setRef(commitId)
                     .call();
-            git.close();
         } catch (GitAPIException e) {
             e.printStackTrace();
             log.error("{}分支回滚代码到commit id: {} 失败", local_git_path, commitId, e);
@@ -130,8 +126,7 @@ public class GitRepository extends BaseRepository {
         //先更新代码
 //        pull(local_git_path, branch);
 
-        Git git = getGit(local_git_path);
-        try {
+        try(Git git = getGit(local_git_path)) {
             return git.branchList().setListMode(ListBranchCommand.ListMode.ALL).call().stream()
                     .map(Ref::getName)
                     .filter(branchStr -> !branchStr.contains("refs/heads"))
@@ -141,8 +136,6 @@ public class GitRepository extends BaseRepository {
             e.printStackTrace();
             log.error("获取本地分支列表失败", e);
             throw new GitException(StatusCode.GIT_LOCAL_BRANCH_ERROR);
-        } finally {
-            git.close();
         }
     }
 
@@ -151,24 +144,20 @@ public class GitRepository extends BaseRepository {
         //先更新代码
         pull(local_git_path, branch);
 
-        Git git = getGit(local_git_path);
-        try {
+        try(Git git = getGit(local_git_path)) {
             return git.tagList().call().stream().map(Ref::getName).collect(toList());
         } catch (GitAPIException e) {
             e.printStackTrace();
             log.error("获取本地tag列表失败", e);
             throw new GitException(StatusCode.GIT_LOCAL_TAG_ERROR);
-        } finally {
-            git.close();
         }
     }
 
     @Override
     public List<String> lsLocalCommitList(String local_git_path) throws IOException {
-        Repository repo = new FileRepository(local_git_path);
-        Git git = new Git(repo);
+
         List<String> list = new ArrayList<>();
-        try {
+        try(Git git = getGit(local_git_path)) {
 //            Iterable<RevCommit> commits = git.log().add(repo.resolve(branch)).call();
             Iterable<RevCommit> commits = git.log().call();
             for(RevCommit commit: commits){
@@ -177,9 +166,6 @@ public class GitRepository extends BaseRepository {
         } catch (GitAPIException e) {
             log.error("{} 获取commit 信息失败", local_git_path, e);
             throw new GitException("获取commit信息失败");
-        }finally {
-            repo.close();
-            git.close();
         }
         return list;
     }
