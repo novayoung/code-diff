@@ -32,7 +32,7 @@ public interface ProjectInfoService extends IService<ProjectInfo> {
      * 拉取工程下所有运行中应用的jacoco探针数据
      * @param projectInfo
      */
-    void pullExecData(ProjectInfo projectInfo);
+    void pullExecData(ProjectInfo projectInfo, String classBranch);
 
     /**
      * 拉取单个应用的jacoco探针数据

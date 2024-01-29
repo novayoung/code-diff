@@ -45,4 +45,7 @@ public class ReportParams implements Serializable {
      */
     private String newVersion;
 
+
+    private String classBranch;
+
 }

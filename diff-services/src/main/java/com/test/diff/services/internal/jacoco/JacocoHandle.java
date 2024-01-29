@@ -132,7 +132,7 @@ public class JacocoHandle {
      * @param diffResult 代码差异列表的序列化字符串。获取全量报告时，此参数为：null
      * @throws Exception 生成报告失败异常
      */
-    public static void report(String execFilePath,
+    public static void report(String name, String execFilePath,
                               List<String> classFilePaths,
                               List<String> sourceFilePaths,
                               String reportPath,
@@ -159,6 +159,8 @@ public class JacocoHandle {
             params.add("--filterRules");
             params.add(filterRules);
         }
+        params.add("--name");
+        params.add(name);
         log.info("jacoco report 参数："+params);
         int result = JacocoApi.execute(params.toArray(new String[0]));
         if(result == -1){

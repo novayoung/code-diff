@@ -91,7 +91,7 @@ public class JacocoHandleTest {
         String projectDir = USER_HOME + "\\feature_v1.1.1_17602254b3c491c2f4c3dcc693db6f41ec5af8e7";
         String reportPath = USER_HOME + "\\report";
         FileUtil fileUtil = new FileUtil();
-        JacocoHandle.report(execFilePath, fileUtil.getAllClassFilePathsByProject(projectDir),
+        JacocoHandle.report("report", execFilePath, fileUtil.getAllClassFilePathsByProject(projectDir),
                 fileUtil.getAllSourcePathsByProject(projectDir),reportPath, JacksonUtil.serialize(classInfos), null);
     }
 

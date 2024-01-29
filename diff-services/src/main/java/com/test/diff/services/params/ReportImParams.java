@@ -49,5 +49,7 @@ public class ReportImParams implements Serializable {
 
     private String featureBranch;
 
+    private String classBranch;
+
 
 }

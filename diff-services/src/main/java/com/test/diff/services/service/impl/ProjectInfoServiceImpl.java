@@ -77,7 +77,7 @@ public class ProjectInfoServiceImpl extends ServiceImpl<ProjectInfoMapper, Proje
     }
 
     @Override
-    public void pullExecData(ProjectInfo projectInfo) {
+    public void pullExecData(ProjectInfo projectInfo, String classBranch) {
         CoverageReport report = coverageReportService.selectUsedByProjectId(projectInfo.getId());
         if(Objects.isNull(report)){
             log.info("{}项目没有收集中的报告记录", projectInfo.getProjectName());
@@ -91,7 +91,7 @@ public class ProjectInfoServiceImpl extends ServiceImpl<ProjectInfoMapper, Proje
         projectVo.getApps().stream()
                 .filter(CoverageApp::getStatus)
                 .forEach(coverageApp -> {
-                    pullSingleExec(projectInfo, coverageApp, report);
+                    pullSingleExec(projectInfo, coverageApp, report, classBranch);
                 });
     }
 
@@ -102,16 +102,32 @@ public class ProjectInfoServiceImpl extends ServiceImpl<ProjectInfoMapper, Proje
             log.error("{}项目没有收集中的报告记录", projectInfo.getProjectName());
             return ;
         }
-        pullSingleExec(projectInfo, coverageApp, report);
+        pullSingleExec(projectInfo, coverageApp, report, null);
     }
 
-    private void pullSingleExec(ProjectInfo projectInfo, CoverageApp  coverageApp, CoverageReport report){
+    /**
+     *
+     * //todo 根据 classBranch 进行合并, classBranch 从服务元数据中获取
+     * 每次 dump 都生成快照数据到对应的 classBranch 中，然后进行合并,
+     * 合并后的结果复制到报告目录中进行覆盖
+     *
+     * @param projectInfo
+     * @param coverageApp
+     * @param report
+     */
+    private void pullSingleExec(ProjectInfo projectInfo, CoverageApp  coverageApp, CoverageReport report, String classBranch){
         log.info("开始自动拉取{}应用探针数据", coverageApp.getAppName());
         String execName = "dump-"+System.currentTimeMillis()+".exec";
+        String classBranchDumpDirName = classBranch + "_dump";
         //1.获取数据，先存放在uuid目录中
-        String execUuidPath = dumpData(coverageApp, projectInfo, report.getUuid(), execName);
+        String execUuidPath = dumpData(coverageApp, projectInfo, classBranchDumpDirName, execName);
         //2.合并uuid目录中的exec文件
-        mergeExec(execUuidPath, projectInfo.getId());
+        try {
+            mergeExec(execUuidPath, projectInfo.getId());
+        } catch (RuntimeException e) {
+            cn.hutool.core.io.FileUtil.del(execUuidPath + File.separator + execName);
+            throw e;
+        }
         //3.把第一步dump下来的数据移至对应分支文件夹中 && 合并分支目录中的exec文件，并删除老数据
         String oriExecPath = fileUtil.addPath(execUuidPath, execName);
         String branchDir = getBranchPath(projectInfo,
@@ -125,6 +141,12 @@ public class ProjectInfoServiceImpl extends ServiceImpl<ProjectInfoMapper, Proje
         }
         mergeExec(branchDir, projectInfo.getId());
         deleteOldExec(branchDir);
+
+        String dumpFile = fileUtil.addPath(execUuidPath, JacocoConst.DEFAULT_EXEC_FILE_NAME);
+        String reportDirDumpFile = fileUtil.getRepoPath(projectInfo, report.getUuid()) + File.separator + JacocoConst.DEFAULT_EXEC_FILE_NAME;
+
+        cn.hutool.core.io.FileUtil.copy(dumpFile, reportDirDumpFile, true);
+
         log.info("{}应用探针数据拉取合并完成...", coverageApp.getAppName());
     }
 

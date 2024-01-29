@@ -2,7 +2,6 @@ package com.test.diff.services.internal;
 
 import cn.hutool.crypto.SecureUtil;
 import com.github.javaparser.JavaParser;
-import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.NodeList;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;

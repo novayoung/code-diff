@@ -39,7 +39,7 @@ public class ScheduledConfig {
                     executor.execute(new Thread(){
                         @Override
                         public void run() {
-                            projectInfoService.pullExecData(projectInfo);
+                            projectInfoService.pullExecData(projectInfo, "");
                         }
                     });
                 });

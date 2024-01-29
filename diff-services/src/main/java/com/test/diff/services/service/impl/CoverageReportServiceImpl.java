@@ -1,11 +1,13 @@
 package com.test.diff.services.service.impl;
 
+import cn.hutool.core.util.XmlUtil;
 import cn.hutool.http.HttpUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.test.diff.common.util.JacksonUtil;
 import com.test.diff.services.base.controller.result.BaseResult;
+import com.test.diff.services.consts.FileConst;
 import com.test.diff.services.consts.JacocoConst;
 import com.test.diff.services.entity.CoverageApp;
 import com.test.diff.services.entity.CoverageReport;
@@ -27,6 +29,7 @@ import com.test.diff.services.utils.JarUtil;
 import com.test.diff.services.utils.WildcardMatcher;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.jacoco.cli.internal.commands.Report;
 import org.jacoco.cli.internal.core.tools.ExecFileLoader;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -35,7 +38,6 @@ import org.springframework.util.CollectionUtils;
 import javax.annotation.Resource;
 import java.io.File;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 @Service
@@ -109,18 +111,25 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
         projectInfo.setReportStatus(ReportStatusEnum.REPORT_GENERATING.getCode());
         projectInfoService.updateById(projectInfo);
 
-        CoverageReport report = selectUsedByProjectId(params.getProjectId());
+        List<CoverageReport> reports = selectListByProjectId(params.getProjectId(), false);
+        for (CoverageReport report1 : reports) {
+            report1.setIsUsed(false);
+            saveOrUpdate(report1);
+        }
+
+        CoverageReport report = selectUsedByProjectIdAndNewBranch(params.getProjectId(), params.getNewVersion());
         //没有使用中的记录，说明没有点开始收集，而是直接点击生成报告。所以先创建一条使用的report记录
         if(Objects.isNull(report)){
             String uuid = CommonUtil.getUUID();
             create(params.getProjectId(), uuid);
             report = selectByUUid(uuid);
-            report.setIsUsed(true);
-            saveOrUpdate(report);
+            report.setNewBranch(params.getNewVersion());
         }
+        report.setIsUsed(true);
+        saveOrUpdate(report);
 
         //最后收集合并一次数据
-        projectInfoService.pullExecData(projectInfo);
+        projectInfoService.pullExecData(projectInfo, params.getClassBranch());
 
         //生成报告
         String uuidDir = fileUtil.getRepoPath(projectInfo, report.getUuid());
@@ -183,7 +192,13 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
             List<String> sourcePaths = fileUtil.getAllSourcePathsByProject(sourceBranchDir);
             List<String> classFilePaths = fileUtil.getAllClassFilePathsByProject(classBranchDir);
 
-            JacocoHandle.report(execFilePath, classFilePaths, sourcePaths, uuidDir, diffResult, filterRules);
+            String name = String.format("env: %s | group: %s | project: %s | branch: %s",
+                    projectInfo.getEnv(),
+                    projectInfo.getProjectGroup(),
+                    projectInfo.getProjectName(),
+                    params.getNewVersion()
+            );
+            JacocoHandle.report(name, execFilePath, classFilePaths, sourcePaths, uuidDir, diffResult, filterRules);
             log.info("报告生成完成！");
             projectInfo.setReportStatus(ReportStatusEnum.REPORT_SUCCESS.getCode());
             projectInfoService.updateById(projectInfo);
@@ -199,6 +214,17 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
         coverageReportMapper.updateById(report);
         log.info("{}项目报告生成成功", projectInfo.getProjectName());
         return BaseResult.success("操作成功");
+    }
+
+    private CoverageReport selectUsedByProjectIdAndNewBranch(Integer projectId, String newVersion) {
+        LambdaQueryWrapper<CoverageReport> query = new LambdaQueryWrapper<>();
+        query.eq(CoverageReport::getProjectId, projectId);
+        query.eq(CoverageReport::getNewBranch, newVersion);
+        //query.eq(CoverageReport::getIsUsed, true);
+        query.eq(CoverageReport::getIsDelete, false);
+        CoverageReport report;
+        report = coverageReportMapper.selectOne(query);
+        return report;
     }
 
     private CoverageReport selectByUUid(String uuid) {
@@ -269,13 +295,13 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
             if(StringUtils.isEmpty(lastReport.getReportUri())) {
                 return BaseResult.error(StatusCode.REPORT_NOT_EXISTS, "最新报告记录未生成或生成失败");
             }
-            return BaseResult.success(reportDomain + lastReport.getReportUri() + "/index.html");
+            return BaseResult.success(reportDomain + reportRelativePath(lastReport.getReportUri()) + "/index.html");
         }
         if(StringUtils.isEmpty(report.getReportUri())){
             return BaseResult.error(StatusCode.REPORT_NOT_EXISTS, "请先点击生成报告再查看");
         }
         //返回路径不考虑是windows路径
-        return BaseResult.success(reportDomain + report.getReportUri() + "/index.html");
+        return BaseResult.success(reportDomain + reportRelativePath(report.getReportUri()) + "/index.html");
     }
 
     private final Map<String, Long> jarTimestampMap = new HashMap<>();
@@ -354,12 +380,32 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
         reportParams.setNewVersion(params.getFeatureBranch());
         reportParams.setOldVersion(params.getBaseBranch());
         reportParams.setReportType(params.getFull() == null || params.getFull() != 1 ? 1 : 0);
+        reportParams.setClassBranch(params.getClassBranch());
 
         BaseResult baseResult = report(reportParams);
         if (baseResult.getCode() == StatusCode.SUCCESS.getCode()) {
             //todo clear history ?
+            CoverageReport report = selectUsedByProjectIdAndNewBranch(projectId.intValue(), params.getFeatureBranch());
+            String reportUrl = reportDomain + reportRelativePath(report.getReportUri()) + "/index.html";
+            Map<String, Object> data = new HashMap<>();
+            data.put("reportUrl", reportUrl);
+            data.put("instructionCoverageRate", parseCoverage(reportUrl));
+            baseResult.setData(data);
         }
         return baseResult;
+    }
+
+    private Integer parseCoverage(String reportUrl) {
+        String xml = HttpUtil.get(reportUrl).replace("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">", "");
+        String coverage = XmlUtil.parseXml(xml).getDocumentElement().getElementsByTagName("tfoot").item(0).getChildNodes().item(0).getChildNodes().item(2).getTextContent().replace("%", "");
+        return Integer.valueOf(coverage);
+    }
+
+    private String reportRelativePath(String absolutePath) {
+        if (!absolutePath.startsWith(FileConst.USER_HOME_PATH)) {
+            return absolutePath;
+        }
+        return absolutePath.substring(FileConst.USER_HOME_PATH.length()).replace("\\", "/");
     }
 
     /**
