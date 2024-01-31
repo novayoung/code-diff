@@ -244,7 +244,7 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
 
     private static void downloadAndExtract(String instanceIp, String classBranchDir) {
         String url = "http://" + instanceIp + ":6400/im-svc";
-        List<String> jars = Arrays.stream(HttpUtil.get(url).split("\n")).filter(s -> s.endsWith(".jar") && !s.contains("jmx_prometheus_javaagent")).collect(Collectors.toList());
+        List<String> jars = Arrays.stream(HttpUtil.get(url).split("\n")).filter(s -> s.endsWith(".jar") && !s.contains("jmx_prometheus_javaagent") && !s.startsWith("jacocoagent")).collect(Collectors.toList());
         for (String jar : jars) {
             String jarFile = classBranchDir + File.separator + "class-" + jar;
             String jarDir = jarFile.substring(0, jarFile.lastIndexOf("."));
