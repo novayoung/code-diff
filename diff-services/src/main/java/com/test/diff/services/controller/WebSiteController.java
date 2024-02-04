@@ -1,12 +1,18 @@
 package com.test.diff.services.controller;
 
+import cn.hutool.core.io.FileUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.test.diff.services.base.controller.result.BaseResult;
+import com.test.diff.services.consts.FileConst;
 import com.test.diff.services.convert.ModelConvert;
 import com.test.diff.services.entity.CoverageApp;
 import com.test.diff.services.entity.CoverageReport;
 import com.test.diff.services.entity.ProjectInfo;
 import com.test.diff.services.enums.*;
-import com.test.diff.services.params.*;
+import com.test.diff.services.params.CollectParams;
+import com.test.diff.services.params.ListProjectParams;
+import com.test.diff.services.params.ReportImParams;
+import com.test.diff.services.params.ReportParams;
 import com.test.diff.services.service.CoverageAppService;
 import com.test.diff.services.service.CoverageReportService;
 import com.test.diff.services.service.ProjectInfoService;
@@ -17,13 +23,11 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
-import com.test.diff.services.base.controller.result.BaseResult;
-
 import javax.annotation.Resource;
+import java.io.File;
 import java.util.Date;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 /**
@@ -132,6 +136,22 @@ public class WebSiteController {
     @PostMapping(value = "/generate/reportIm", produces = "application/json;charset=UTF-8")
     public BaseResult generateReportIm(@Validated  @RequestBody ReportImParams params){
         return coverageReportService.reportIm(params);
+    }
+
+
+    @PostMapping(value = "/generate/clearWorkspace", produces = "application/json;charset=UTF-8")
+    public BaseResult clearWorkspace(@Validated  @RequestBody ReportImParams params){
+        String group = params.getGroup();
+        String service = params.getService();
+        String env = params.getEnv();
+        log.info("group {}, service {}, env {}", group, service, env);
+        if (StringUtils.isBlank(group) || StringUtils.isBlank(service) || StringUtils.isBlank(env)) {
+            throw new RuntimeException("清空参数不能为空!");
+        }
+        String dirPath = FileConst.DIFF_ROOT_PATH + File.separator + group + File.separator + env + File.separator + service;
+        log.info("清空目录 {}", dirPath);
+        FileUtil.del(new File(dirPath));
+        return BaseResult.success(true);
     }
 
     /**

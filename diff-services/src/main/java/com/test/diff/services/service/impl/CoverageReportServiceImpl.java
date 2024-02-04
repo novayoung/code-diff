@@ -29,11 +29,11 @@ import com.test.diff.services.utils.JarUtil;
 import com.test.diff.services.utils.WildcardMatcher;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
-import org.jacoco.cli.internal.commands.Report;
 import org.jacoco.cli.internal.core.tools.ExecFileLoader;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
+import org.w3c.dom.NodeList;
 
 import javax.annotation.Resource;
 import java.io.File;
@@ -45,7 +45,7 @@ import java.util.stream.Collectors;
 public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper, CoverageReport>
     implements CoverageReportService{
 
-    @Value("${report.domain}")
+    @Value("${report.domain:http://10.5.64.4:8899}")
     private String reportDomain;
 
     @Resource
@@ -396,8 +396,13 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
     }
 
     private Integer parseCoverage(String reportUrl) {
+        log.info("解析报告地址：{}", reportUrl);
         String xml = HttpUtil.get(reportUrl).replace("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">", "");
-        String coverage = XmlUtil.parseXml(xml).getDocumentElement().getElementsByTagName("tfoot").item(0).getChildNodes().item(0).getChildNodes().item(2).getTextContent().replace("%", "");
+        NodeList nodeList = XmlUtil.parseXml(xml).getDocumentElement().getElementsByTagName("tfoot");
+        if (nodeList == null || nodeList.getLength() == 0) {
+            return -1;
+        }
+        String coverage = nodeList.item(0).getChildNodes().item(0).getChildNodes().item(2).getTextContent().replace("%", "");
         return Integer.valueOf(coverage);
     }
 
