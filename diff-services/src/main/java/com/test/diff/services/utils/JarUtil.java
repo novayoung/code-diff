@@ -13,11 +13,13 @@ import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.channels.ReadableByteChannel;
+import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
+import java.util.stream.Collectors;
 
 /**
  * 解压jar的工具类
@@ -132,6 +134,23 @@ public class JarUtil {
                     log.error("创建文件失败>>>".concat(fileInst.getPath()), e);
                 }
             }
+        }
+    }
+
+    public static boolean hasAny(File jarFile, String... prefixes) {
+        Set<String> prefixSet = Arrays.stream(prefixes).collect(Collectors.toSet());
+        try (JarFile jfInst = new JarFile(jarFile) ) {
+            Enumeration enumEntry = jfInst.entries();
+            while (enumEntry.hasMoreElements()) {
+                JarEntry jarEntry = (JarEntry) enumEntry.nextElement();
+                String entryName = jarEntry.getName();
+                if (prefixSet.stream().anyMatch(entryName::startsWith)) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
     }
 }
