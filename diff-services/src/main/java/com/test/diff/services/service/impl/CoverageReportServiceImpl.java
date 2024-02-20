@@ -263,7 +263,7 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
                 String libClassDir = jarDir + File.separator  + "libclass";
                 cn.hutool.core.io.FileUtil.mkdir(libClassDir);
                 if (libFile.listFiles() == null) {
-                    return;
+                    continue;
                 }
                 for (File libJarFile : Objects.requireNonNull(libFile.listFiles())) {
                     String libJarFileName = libJarFile.getName();
