@@ -27,7 +27,7 @@
 <!--        <mysql.version>8.0.29</mysql.version>-->
         <lombok.version>1.18.12</lombok.version>
         <slf4j.version>1.7.30</slf4j.version>
-        <commons.lang3.version>3.4</commons.lang3.version>
+        <commons.lang3.version>3.10</commons.lang3.version>
         <comons.collections.version>4.4</comons.collections.version>
         <mybatis.plus.version>3.4.2</mybatis.plus.version>
         <jgin.version>5.12.0.202106070339-r</jgin.version>
@@ -103,6 +103,11 @@
                 <version>${javaParser.version}</version>
             </dependency>
             <dependency>
+                <groupId>com.github.javaparser</groupId>
+                <artifactId>javaparser-symbol-solver-core</artifactId>
+                <version>${javaParser.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>cn.hutool</groupId>
                 <artifactId>hutool-all</artifactId>
                 <version>${hutool.version}</version>
@@ -141,6 +146,11 @@
                 <version>${fastjson2.version}</version>
             </dependency>
 
+            <dependency>
+                <groupId>com.github.adrninistrator</groupId>
+                <artifactId>java-all-call-graph</artifactId>
+                <version>1.0.14</version>
+            </dependency>
 
         </dependencies>
     </dependencyManagement>

@@ -1,6 +1,7 @@
 package com.test.diff.services.utils;
 
 import cn.hutool.core.io.FileUtil;
+import com.test.diff.services.consts.FileConst;
 import lombok.SneakyThrows;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -33,6 +34,7 @@ public class JarUtil {
     public static void uncompress(File jarFile, File tarDir) {
         Set<String> prefixes = new HashSet<>();
         prefixes.add("BOOT-INF");
+        prefixes.add("com/" + FileConst.BASE_PACKAGE_NAME);
         uncompress(jarFile, tarDir, prefixes);
     }
 

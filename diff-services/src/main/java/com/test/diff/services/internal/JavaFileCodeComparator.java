@@ -3,10 +3,14 @@ package com.test.diff.services.internal;
 import cn.hutool.crypto.SecureUtil;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.NodeList;
+import com.github.javaparser.ast.PackageDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.Parameter;
+import com.github.javaparser.ast.type.ReferenceType;
+import com.github.javaparser.ast.type.Type;
 import com.github.javaparser.ast.visitor.VoidVisitorAdapter;
 import com.test.diff.common.domain.ClassInfo;
 import com.test.diff.common.domain.MethodInfo;
@@ -20,7 +24,10 @@ import org.springframework.util.CollectionUtils;
 
 import java.io.FileInputStream;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -31,7 +38,7 @@ import java.util.stream.Collectors;
 public class JavaFileCodeComparator implements ICodeComparator{
 
     @Override
-    public ClassInfo getDiffClassInfo(DiffEntry diffEntry, String oldFilePath, String newFilePath) {
+    public ClassInfo getDiffClassInfo(DiffEntry diffEntry, String oldFilePath, String newFilePath, boolean ifFullParamName) {
         String className,packName;
         if(diffEntry.getNewPath().contains(GitConst.JAVA_DEFAULT_PATH)){
             className = diffEntry.getNewPath().split("\\.")[0].split(GitConst.JAVA_DEFAULT_PATH)[1];
@@ -43,10 +50,15 @@ public class JavaFileCodeComparator implements ICodeComparator{
 
         //新增类
         if(DiffEntry.ChangeType.ADD.equals(diffEntry.getChangeType())){
+            List<MethodInfo> methodInfos = null;
+            if (ifFullParamName) {
+                methodInfos = parseMethods(newFilePath, ifFullParamName);
+            }
             return ClassInfo.builder()
                     .className(className)
                     .diffType(DiffResultTypeEnum.ADD)
                     .packageName(packName)
+                    .methodInfos(methodInfos)
                     .build();
         }
         //删除类 需要获取删除类的所有方法
@@ -59,13 +71,13 @@ public class JavaFileCodeComparator implements ICodeComparator{
         }
         List<MethodInfo> diffMethods = new ArrayList<>();
         //获取新类的所有方法
-        List<MethodInfo> newMethodInfoResults = parseMethods(newFilePath);
+        List<MethodInfo> newMethodInfoResults = parseMethods(newFilePath, ifFullParamName);
         //如果新类为空，没必要比较
         if (CollectionUtils.isEmpty(newMethodInfoResults)) {
             return null;
         }
         //获取旧类的所有方法
-        List<MethodInfo> oldMethodInfoResults = parseMethods(oldFilePath);
+        List<MethodInfo> oldMethodInfoResults = parseMethods(oldFilePath, ifFullParamName);
         //如果旧类为空，新类的方法所有为增量
         if (CollectionUtils.isEmpty(oldMethodInfoResults)) {
             diffMethods = newMethodInfoResults;
@@ -114,7 +126,7 @@ public class JavaFileCodeComparator implements ICodeComparator{
      * @param classFile
      * @return
      */
-    public static List<MethodInfo> parseMethods(String classFile){
+    public static List<MethodInfo> parseMethods(String classFile, boolean ifFullParamName){
         List<MethodInfo> list = new ArrayList<>();
         try (FileInputStream in = new FileInputStream(classFile)){
             JavaParser javaParser = new JavaParser();
@@ -125,7 +137,7 @@ public class JavaFileCodeComparator implements ICodeComparator{
             if (isInterface) {
                 return list;
             }
-            cu.accept(new MethodVisitor(), list);
+            cu.accept(new MethodVisitor(ifFullParamName, cu.getPackageDeclaration().orElse(null), cu.getImports()), list);
             return list;
         } catch (Exception e) {
             log.error("使用javaParser解析{}文件失败", classFile, e);
@@ -137,6 +149,25 @@ public class JavaFileCodeComparator implements ICodeComparator{
      * javaparser工具类核心方法，主要通过这个类遍历class文件的方法，此方法主要是获取出代码的所有方法，然后再去对比方法是否存在差异
      */
     private static class MethodVisitor extends VoidVisitorAdapter<List<MethodInfo>> {
+
+        private final boolean ifFullParamName;
+        private final Map<String, String> importClassNames;
+        private final String packageName;
+
+        private MethodVisitor(boolean ifFullParamName, PackageDeclaration packageDeclaration, NodeList<ImportDeclaration> imports) {
+            this.ifFullParamName = ifFullParamName;
+            this.packageName = packageDeclaration == null ? null : packageDeclaration.getNameAsString();
+            importClassNames = new HashMap<>();
+            if (imports != null) {
+                imports.forEach(importDeclaration -> {
+                    String name = importDeclaration.getNameAsString();
+                    String[] arr = name.split("\\.");
+                    String simpleName = arr.length == 1 ? arr[0] : arr[arr.length - 1];
+                    importClassNames.put(simpleName, name);
+                });
+            }
+        }
+
         @Override
         public void visit(MethodDeclaration n, List<MethodInfo> list) {
             //删除注释
@@ -148,7 +179,20 @@ public class JavaFileCodeComparator implements ICodeComparator{
             NodeList<Parameter> parameters = n.getParameters();
             if(!CollectionUtils.isEmpty(parameters)){
                 for (int i = 0; i < parameters.size(); i++) {
-                    String param = parameters.get(i).getType().toString();
+                    Type paramType = parameters.get(i).getType();
+                    String param = paramType.toString();
+                    if (ifFullParamName) {
+                        param = Pattern.compile("<[^<>]*>").matcher(param).replaceAll("");
+                        if (paramType instanceof ReferenceType) {
+                            if (importClassNames.containsKey(param)) {  // import
+                                param = importClassNames.get(param);
+                            } else if(isLang(param)) {                  // java.lang
+                                param = "java.lang." + param;
+                            } else {                                    // same package
+                                param = packageName == null ? param : packageName + "." + param;
+                            }
+                        }
+                    }
                     params.append(param.replaceAll(" ", ""));
                     //和asm一致，每个参数都使用分号结尾
                     params.append(";");
@@ -163,6 +207,16 @@ public class JavaFileCodeComparator implements ICodeComparator{
                     .build();
             list.add(methodInfo);
             super.visit(n, list);
+        }
+
+        private boolean isLang(String param) {
+            try {
+                String name = param.replace("[]", "").trim();
+                Class.forName("java.lang." + name);
+                return true;
+            } catch (ClassNotFoundException e) {
+                return false;
+            }
         }
 
     }

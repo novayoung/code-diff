@@ -311,6 +311,33 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
         /*
          * 如果数据库不存在则创建记录
          */
+        Long projectId = computeIfAbsentProject(params);
+
+        /*
+         * 调用 api 生成报告
+         */
+        ReportParams reportParams = new ReportParams();
+        reportParams.setProjectId(projectId.intValue());
+        reportParams.setDiffType(DiffTypeEnum.BRANCH_DIFF.getCode());
+        reportParams.setNewVersion(params.getFeatureBranch());
+        reportParams.setOldVersion(params.getBaseBranch());
+        reportParams.setReportType(params.getFull() == null || params.getFull() != 1 ? 1 : 0);
+        reportParams.setClassBranch(params.getClassBranch());
+
+        BaseResult baseResult = report(reportParams);
+        if (baseResult.getCode() == StatusCode.SUCCESS.getCode()) {
+            //todo clear history ?
+            CoverageReport report = selectUsedByProjectIdAndNewBranch(projectId.intValue(), params.getFeatureBranch());
+            String reportUrl = reportDomain + reportRelativePath(report.getReportUri()) + "/index.html";
+            Map<String, Object> data = new HashMap<>();
+            data.put("reportUrl", reportUrl);
+            data.put("instructionCoverageRate", parseCoverage(reportUrl));
+            baseResult.setData(data);
+        }
+        return baseResult;
+    }
+
+    public Long computeIfAbsentProject(ReportImParams params) {
         Long projectId;
         Page<ProjectInfo> pages =  projectInfoService.selectListByParams(ListProjectParams.builder().env(params.getEnv()).projectGroup(params.getGroup()).projectName(params.getService()).page(1).size(10).build());
         if (pages.getRecords().isEmpty()) {
@@ -370,29 +397,7 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
                 coverageAppService.saveOrUpdate(coverageApp);
             }
         }
-
-        /*
-         * 调用 api 生成报告
-         */
-        ReportParams reportParams = new ReportParams();
-        reportParams.setProjectId(projectId.intValue());
-        reportParams.setDiffType(DiffTypeEnum.BRANCH_DIFF.getCode());
-        reportParams.setNewVersion(params.getFeatureBranch());
-        reportParams.setOldVersion(params.getBaseBranch());
-        reportParams.setReportType(params.getFull() == null || params.getFull() != 1 ? 1 : 0);
-        reportParams.setClassBranch(params.getClassBranch());
-
-        BaseResult baseResult = report(reportParams);
-        if (baseResult.getCode() == StatusCode.SUCCESS.getCode()) {
-            //todo clear history ?
-            CoverageReport report = selectUsedByProjectIdAndNewBranch(projectId.intValue(), params.getFeatureBranch());
-            String reportUrl = reportDomain + reportRelativePath(report.getReportUri()) + "/index.html";
-            Map<String, Object> data = new HashMap<>();
-            data.put("reportUrl", reportUrl);
-            data.put("instructionCoverageRate", parseCoverage(reportUrl));
-            baseResult.setData(data);
-        }
-        return baseResult;
+        return projectId;
     }
 
     private Integer parseCoverage(String reportUrl) {

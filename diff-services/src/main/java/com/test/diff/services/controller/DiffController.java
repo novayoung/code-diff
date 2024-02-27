@@ -1,6 +1,7 @@
 package com.test.diff.services.controller;
 
 import com.test.diff.common.domain.ClassInfo;
+import com.test.diff.common.enums.DiffResultTypeEnum;
 import com.test.diff.common.util.JacksonUtil;
 import com.test.diff.services.enums.StatusCode;
 import com.test.diff.services.internal.DiffWorkFlow;
@@ -19,6 +20,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * @author wl
@@ -37,9 +39,16 @@ public class DiffController {
             return BaseResult.error(StatusCode.PARAMS_ERROR, "参数错误");
         }
         List<ClassInfo> list = diffWorkFlow.diff(params);
+        if (params.isIfFullParamName()) {
+            list.forEach(classInfo -> {
+                if (classInfo.getMethodInfos() == null) {
+                    return;
+                }
+                classInfo.setMethodInfos(classInfo.getMethodInfos().stream().filter(methodInfo -> methodInfo.getDiffType() != DiffResultTypeEnum.DEL).collect(Collectors.toList()));
+            });
+        }
         String sequence = JacksonUtil.serialize(list);
         System.out.println(sequence);
         return BaseResult.success(sequence);
-
     }
 }

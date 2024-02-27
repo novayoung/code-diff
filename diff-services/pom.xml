@@ -87,6 +87,10 @@
             <artifactId>javaparser-core</artifactId>
         </dependency>
         <dependency>
+            <groupId>com.github.javaparser</groupId>
+            <artifactId>javaparser-symbol-solver-core</artifactId>
+        </dependency>
+        <dependency>
             <groupId>cn.hutool</groupId>
             <artifactId>hutool-all</artifactId>
         </dependency>
@@ -106,6 +110,11 @@
             <scope>system</scope>
             <systemPath>${project.basedir}/../lib/jacoco-cli.jar</systemPath>
 <!--            <classifier>nodeps</classifier>-->
+        </dependency>
+
+        <dependency>
+            <groupId>com.github.adrninistrator</groupId>
+            <artifactId>java-all-call-graph</artifactId>
         </dependency>
 
     </dependencies>

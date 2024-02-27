@@ -58,4 +58,6 @@ public interface CoverageReportService extends IService<CoverageReport> {
      * @return
      */
     BaseResult reportIm(ReportImParams params);
+
+    Long computeIfAbsentProject(ReportImParams params);
 }

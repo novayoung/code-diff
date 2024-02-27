@@ -18,15 +18,22 @@ import org.eclipse.jgit.api.DiffCommand;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.diff.DiffEntry;
+import org.eclipse.jgit.diff.DiffFormatter;
+import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevWalk;
+import org.eclipse.jgit.storage.file.FileRepositoryBuilder;
 import org.eclipse.jgit.treewalk.AbstractTreeIterator;
+import org.eclipse.jgit.util.io.DisabledOutputStream;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
 import java.io.File;
 import java.io.IOException;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 
@@ -69,10 +76,8 @@ public class DiffWorkFlow {
                     newTree = baseRepository.prepareTreeParser(newGit.getRepository(), params.getNewVersion());
                     break;
                 case COMMIT_DIFF:
-                    baseGit = syncCode(baseRepository, projectInfo, params.getNewVersion(),
-                            params.getOldCommitId(), false);
-                    newGit = syncCode(baseRepository, projectInfo, params.getNewVersion(),
-                            params.getNewCommitId(), false);
+                    baseGit = syncCode(baseRepository, projectInfo, params.getNewVersion(), params.getOldCommitId(), false);
+                    newGit = syncCode(baseRepository, projectInfo, params.getNewVersion(), params.getNewCommitId(), false);
                     baseTree = baseRepository.prepareTreeParser(baseGit.getRepository(), params.getOldCommitId());
                     newTree = baseRepository.prepareTreeParser(newGit.getRepository(), params.getNewCommitId());
                     break;
@@ -80,6 +85,10 @@ public class DiffWorkFlow {
                     throw new BizException(StatusCode.DIFF_TYPE_ERROR);
             }
             List<DiffEntry> list = getDiffCodeClasses(newGit, baseTree, newTree);
+            if (DiffTypeEnum.getDiffTypeByCode(params.getDiffTypeCode()) == DiffTypeEnum.BRANCH_DIFF) {
+                list = getDiffByBranch(baseRepository, projectInfo, newGit, params.getNewVersion(), params.getOldVersion());
+                list = filterClass(list);
+            }
             newGit.getRepository().getRefDatabase().close();
             log.info("需要比对的类个数：{}", list.size());
 
@@ -87,7 +96,7 @@ public class DiffWorkFlow {
             Git finalNewGit = newGit;
             List<CompletableFuture<ClassInfo>> futures = list.stream()
                     .map(diffEntry -> diffHandle(diffEntry, getFilePath(finalBaseGit, diffEntry.getOldPath()),
-                            getFilePath(finalNewGit, diffEntry.getNewPath())))
+                            getFilePath(finalNewGit, diffEntry.getNewPath()), params.isIfFullParamName()))
                     .collect(Collectors.toList());
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
@@ -119,10 +128,10 @@ public class DiffWorkFlow {
      * @param newFilePath
      * @return
      */
-    private CompletableFuture<ClassInfo> diffHandle(DiffEntry diffEntry, String oldFilePath, String newFilePath){
+    private CompletableFuture<ClassInfo> diffHandle(DiffEntry diffEntry, String oldFilePath, String newFilePath, boolean ifFullParamName){
         return CompletableFuture.supplyAsync(() ->{
             ICodeComparator codeComparator = CodeComparatorFactory.createCodeComparator();
-            return codeComparator.getDiffClassInfo(diffEntry, oldFilePath, newFilePath);
+            return codeComparator.getDiffClassInfo(diffEntry, oldFilePath, newFilePath, ifFullParamName);
         }, executor);
     }
 
@@ -149,6 +158,10 @@ public class DiffWorkFlow {
                                                AbstractTreeIterator newTree) throws GitAPIException {
         DiffCommand diff = newGit.diff();
         List<DiffEntry> list = diff.setOldTree(baseTree).setNewTree(newTree).setShowNameAndStatusOnly(true).call();
+        return filterClass(list);
+    }
+
+    private static List<DiffEntry> filterClass(List<DiffEntry> list) {
         return list.stream()
                 //只计算java文件
                 .filter(diffEntry -> diffEntry.getNewPath().endsWith(GitConst.JAVA_FILE_SUFFIX))
@@ -207,37 +220,93 @@ public class DiffWorkFlow {
     }
 
 
+    private final Map<String, Object> updateCodeLocks = new ConcurrentHashMap<>();
     private Git updateCode(BaseRepository repository, String path,
                            String projectName, String projectUrl,
                            String branch, String commitId, boolean isBranchDiff) throws IOException {
 //        path = checkProjectPath(path, projectName, branch, commitId, isBranchDiff);
-        String gitPath = fileUtil.addPath(path, GitConst.GIT_FILE_SUFFIX);
-        if(new File(path).exists()){
-            if(this.threadLocal.get().isUpdateCode() && isBranchDiff){
-                repository.pull(gitPath, branch);
+        Object lock = updateCodeLocks.computeIfAbsent(path, (k) -> new Object());
+        synchronized (lock) {
+            String gitPath = fileUtil.addPath(path, GitConst.GIT_FILE_SUFFIX);
+            if(new File(path).exists()){
+                if(this.threadLocal.get().isUpdateCode() && isBranchDiff){
+                    repository.pull(gitPath, branch);
+                }
+                Git git;
+                if (!new File(gitPath).exists()) {
+                    //不存在就先克隆项目
+                    git = repository.clone(projectUrl, path, branch);
+                    //然后再回退到指定commit id 版本
+                    repository.pullByCommitId(gitPath, branch, commitId);
+                } else {
+                    git = GitRepository.getGit(gitPath);
+                }
+                return git;
             }
-            Git git;
-            if (!new File(gitPath).exists()) {
+            if(isBranchDiff){
+                return repository.clone(projectUrl, path, branch);
+            }else{
                 //不存在就先克隆项目
-                git = repository.clone(projectUrl, path, branch);
+                Git git = repository.clone(projectUrl, path, branch);
                 //然后再回退到指定commit id 版本
                 repository.pullByCommitId(gitPath, branch, commitId);
-            } else {
-                git = GitRepository.getGit(gitPath);
+                //最后返回Git对象
+                return git;
             }
-            return git;
         }
-        if(isBranchDiff){
-            return repository.clone(projectUrl, path, branch);
-        }else{
-            //不存在就先克隆项目
-            Git git = repository.clone(projectUrl, path, branch);
-            //然后再回退到指定commit id 版本
-            repository.pullByCommitId(gitPath, branch, commitId);
-            //最后返回Git对象
-            return git;
-        }
+    }
 
+    private List<DiffEntry> getDiffByBranch(BaseRepository baseRepository, ProjectInfo projectInfo, Git featureGit, String featureBranch, String baseBranch) {
+        String branch_path = fileUtil.getRepoPath(projectInfo, featureBranch);
+        FileRepositoryBuilder builder = new FileRepositoryBuilder();
+
+        try (Repository repository = builder.setGitDir(new File(branch_path + File.separator + ".git"))
+                .readEnvironment()
+                .findGitDir()
+                .build()) {
+            if (repository.getRefDatabase().findRef(baseBranch) != null) {
+                featureGit.branchDelete().setForce(true).setBranchNames(baseBranch).call();
+            }
+            String baseBranchRemoteRef = "refs/remotes/origin/" + baseBranch;
+            featureGit.branchCreate().setName(baseBranch).setStartPoint(baseBranchRemoteRef).call();
+            ObjectId baseBranchId = repository.resolve(baseBranch + "^{commit}");
+            ObjectId featureBranchId = repository.resolve(featureBranch + "^{commit}");
+
+            // Use RevWalk to parse commit and get the tree
+            try (RevWalk revWalk = new RevWalk(repository)) {
+                RevCommit baseCommit = revWalk.parseCommit(baseBranchId);
+                RevCommit featureCommit = revWalk.parseCommit(featureBranchId);
+
+                // Check if feature branch is contained in the base branch (no changes to show if true)
+                if (revWalk.isMergedInto(featureCommit, baseCommit)) {
+                    return new ArrayList<>();
+                } else {
+                    // If not fully merged, do the diff
+                    try (DiffFormatter df = new DiffFormatter(DisabledOutputStream.INSTANCE)) {
+                        df.setRepository(repository);
+                        df.setDetectRenames(true);
+                        return df.scan(baseCommit.getTree(), featureCommit.getTree());
+                    }
+
+//                    revWalk.markStart(featureCommit);
+//                    revWalk.markStart(baseCommit);
+//                    RevCommit mergeBase = revWalk.next();
+//
+//                    // Now we have the merge base, we can compute the diff
+//                    List<DiffEntry> diffEntries;
+//                    try (DiffFormatter diffFormatter = new DiffFormatter(DisabledOutputStream.INSTANCE)) {
+//                        diffFormatter.setRepository(repository);
+//                        diffFormatter.setDetectRenames(true);
+//                        diffEntries = diffFormatter.scan(mergeBase.getTree(), featureCommit.getTree());
+//                    }
+//                    return diffEntries;
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            log.error(e.getMessage(), e);
+            throw new RuntimeException(e);
+        }
     }
 
 }

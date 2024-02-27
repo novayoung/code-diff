@@ -43,4 +43,6 @@ public class ProjectDiffParams extends BaseParams{
      */
     private String newCommitId;
 
+    private boolean ifFullParamName = false;
+
 }

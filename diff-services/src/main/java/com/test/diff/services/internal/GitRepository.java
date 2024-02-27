@@ -15,24 +15,22 @@ import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ListBranchCommand;
 import org.eclipse.jgit.api.ResetCommand;
 import org.eclipse.jgit.api.errors.GitAPIException;
-import org.eclipse.jgit.internal.storage.file.FileRepository;
-import org.eclipse.jgit.internal.storage.file.GC;
 import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevTree;
 import org.eclipse.jgit.revwalk.RevWalk;
-import org.eclipse.jgit.storage.pack.PackConfig;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.eclipse.jgit.treewalk.AbstractTreeIterator;
 import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 
-import javax.annotation.Resource;
 import java.io.File;
 import java.io.IOException;
-import java.text.ParseException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Objects;
 
 import static java.util.stream.Collectors.toList;
 
@@ -50,13 +48,15 @@ public class GitRepository extends BaseRepository {
     public Git clone(String url, String projectLocalPath, String branch){
         new FileUtil().createDir(projectLocalPath);
         try {
-            return Git.cloneRepository()
+            Git git = Git.cloneRepository()
                     .setURI(url)
                     .setCredentialsProvider(new UsernamePasswordCredentialsProvider(super.getRepoInfo().getUserName(),
                             super.getRepoInfo().getPasswd()))
                     .setBranch(branch)
                     .setDirectory(new File(projectLocalPath))
                     .call();
+            git.fetch().setCredentialsProvider(new UsernamePasswordCredentialsProvider(super.getRepoInfo().getUserName(), super.getRepoInfo().getPasswd())).call();
+            return git;
         } catch (GitAPIException e) {
             log.error("clone project:{} is failed", url);
             e.printStackTrace();
@@ -76,10 +76,11 @@ public class GitRepository extends BaseRepository {
                 .setCredentialsProvider(new UsernamePasswordCredentialsProvider(super.getRepoInfo().getUserName(),
                         super.getRepoInfo().getPasswd()))
                 .call();
+            git.fetch().setCredentialsProvider(new UsernamePasswordCredentialsProvider(super.getRepoInfo().getUserName(), super.getRepoInfo().getPasswd())).call();
         } catch (GitAPIException e) {
             e.printStackTrace();
             log.error("拉取代码失败，git path: {}", local_git_path, e);
-            throw new GitException(StatusCode.GIT_PULL_CODE_ERROR);
+            throw new GitException(StatusCode.GIT_PULL_CODE_ERROR, e);
         }
     }
 

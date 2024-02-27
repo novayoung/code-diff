@@ -19,5 +19,5 @@ public interface ICodeComparator {
      * @param newFilePath 目标版本java文件路径
      * @return
      */
-    public ClassInfo getDiffClassInfo(DiffEntry diffEntry, String oldFilePath, String newFilePath);
+    public ClassInfo getDiffClassInfo(DiffEntry diffEntry, String oldFilePath, String newFilePath, boolean ifFullParamName);
 }

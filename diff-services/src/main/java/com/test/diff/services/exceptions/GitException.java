@@ -18,6 +18,10 @@ public class GitException extends RuntimeException{
         super(statusCode.getDesc());
         this.statusCode = statusCode;
     }
+    public GitException(StatusCode statusCode, Exception cause){
+        super(statusCode.getDesc(), cause);
+        this.statusCode = statusCode;
+    }
     public GitException(String msg){
         super(msg);
     }

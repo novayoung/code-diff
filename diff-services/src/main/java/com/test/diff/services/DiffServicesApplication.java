@@ -1,5 +1,6 @@
 package com.test.diff.services;
 
+import com.test.diff.services.enhance.JacgEnhancer;
 import com.test.diff.services.utils.SpringUtil;
 import org.apache.ibatis.javassist.ClassClassPath;
 import org.apache.ibatis.javassist.ClassPool;
@@ -18,6 +19,7 @@ import org.springframework.context.annotation.Configuration;
 public class DiffServicesApplication {
 
     public static void main(String[] args) {
+        JacgEnhancer.enhance();
         clearReport();
         ConfigurableApplicationContext app = SpringApplication.run(DiffServicesApplication.class, args);
         SpringUtil.setContext(app);
