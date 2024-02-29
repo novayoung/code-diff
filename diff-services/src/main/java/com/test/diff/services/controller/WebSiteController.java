@@ -157,6 +157,10 @@ public class WebSiteController {
         String dirPath = FileConst.DIFF_ROOT_PATH + File.separator + group + File.separator + env + File.separator + service;
         log.info("清空目录 {}", dirPath);
         FileUtil.del(new File(dirPath));
+
+        String dirPath1 = FileConst.CALL_ROOT_PATH + File.separator + group + File.separator + env + File.separator + service;
+        log.info("清空目录 {}", dirPath1);
+        FileUtil.del(new File(dirPath1));
         return BaseResult.success(true);
     }
 

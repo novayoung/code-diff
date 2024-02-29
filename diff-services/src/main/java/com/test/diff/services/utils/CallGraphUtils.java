@@ -8,19 +8,23 @@ import com.adrninistrator.jacg.dboper.DbOperWrapper;
 import com.adrninistrator.jacg.dboper.DbOperator;
 import com.adrninistrator.jacg.dto.write_db.WriteDbData4ClassAnnotation;
 import com.adrninistrator.jacg.dto.write_db.WriteDbData4MethodAnnotation;
+import com.adrninistrator.jacg.dto.write_db.WriteDbData4MethodInfo;
 import com.adrninistrator.jacg.runner.RunnerGenAllGraph4Callee;
 import com.adrninistrator.jacg.runner.RunnerGenAllGraph4Caller;
 import com.adrninistrator.jacg.runner.RunnerWriteDb;
 import com.adrninistrator.jacg.util.JACGSqlUtil;
 import com.test.diff.services.consts.FileConst;
 import lombok.Data;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.File;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
+@Slf4j
 public class CallGraphUtils {
 
     public static void create(String ws, String service, String dbFile, List<String> jarPaths) {
@@ -38,16 +42,17 @@ public class CallGraphUtils {
         runnerGenAllGraph4Caller.run(configureWrapper);
     }
 
-    public static com.test.diff.services.base.controller.result.BaseResult callee(String ws, String service, String dbFile, Set<String> caller) {
+    public static com.test.diff.services.base.controller.result.BaseResult callee(String ws, String service, String dbFile, Set<String> methods) {
         String reportDir = ws + File.separator + "_jacg_o_ee";
         FileUtil.del(reportDir);
         RunnerGenAllGraph4Callee runnerGenAllGraph4Caller = new RunnerGenAllGraph4Callee();
         ConfigureWrapper configureWrapper = buildConfigureWrapper(ws, service, dbFile);
-        configureWrapper.setOtherConfigSet(OtherConfigFileUseSetEnum.OCFUSE_METHOD_CLASS_4CALLEE, caller);
-        runnerGenAllGraph4Caller.run(configureWrapper);
 
         DbOperWrapper dbOperWrapper = DbOperWrapper.genInstance(configureWrapper, RunnerGenAllGraph4Callee.class.getSimpleName());
         DbOperator dbOperator = dbOperWrapper.getDbOperator();
+        String appName = configureWrapper.getMainConfig(ConfigKeyEnum.CKE_APP_NAME);
+        configureWrapper.setOtherConfigSet(OtherConfigFileUseSetEnum.OCFUSE_METHOD_CLASS_4CALLEE, replaceMethods(dbOperator, appName, methods));
+        runnerGenAllGraph4Caller.run(configureWrapper);
 
         try {
             Map<String, List<List<String>>> allTraces = new LinkedHashMap<>();
@@ -58,11 +63,13 @@ public class CallGraphUtils {
                 String emptyFlag = "-empty.txt";
                 if (methodsFileName.endsWith(emptyFlag)) {
                     String methodFullName = methodsFileName.replace(emptyFlag, "").replace("@", ":");
-                    Map<String, String> uriMap = getApiByControllerMethod(dbOperator, configureWrapper.getMainConfig(ConfigKeyEnum.CKE_APP_NAME), methodFullName);
+                    Map<String, String> uriMap = getApiByControllerMethod(dbOperator, appName, methodFullName);
                     if (uriMap != null) {
                         String uri = uriMap.get("uri");
                         String fullMethod = uriMap.get("fullMethod");
-                        allTraces.computeIfAbsent(uri, (k) -> new LinkedList<>()).add(new LinkedList<String>() {{add(fullMethod);}});
+                        allTraces.computeIfAbsent(uri, (k) -> new LinkedList<>()).add(new LinkedList<String>() {{
+                            add(fullMethod);
+                        }});
                     }
                 } else {
                     List<String> lines = FileUtil.readLines(methodFile, "UTF-8");
@@ -100,6 +107,59 @@ public class CallGraphUtils {
             dbOperator.closeDs();
         }
 
+    }
+
+    private static Set<String> replaceMethods(DbOperator dbOperator, String appName, Set<String> methods) {
+        log.info("开始替换方法: {}", methods);
+        Set<String> set = new HashSet<>();
+        for (String method : methods) {
+            if (method.endsWith("()")) {
+                set.add(method);
+                continue;
+            }
+            String[] arr = method.split(":");
+            String className = arr[0];
+            String simpleClassName = className.substring(className.lastIndexOf(".") + 1);
+            String methodAndParams = arr[1];
+            String methodName = methodAndParams.substring(0, methodAndParams.indexOf("("));
+            String methodParams = methodAndParams.substring(methodAndParams.indexOf("(") + 1, methodAndParams.indexOf(")"));
+
+            // todo convert com.test.class.method(DTO) to com.test.class.method(com.test.dto.DTO)
+            String sql = "select " + "*" +
+                    " from " + DbTableInfoEnum.DTIE_METHOD_INFO.getTableName() +
+                    " where " + DC.COMMON_SIMPLE_CLASS_NAME + " = '" + simpleClassName + "'" +
+                    " and " + DC.MI_METHOD_NAME + " = '" + methodName + "'";
+            sql = JACGSqlUtil.replaceAppNameInSql(sql, appName);
+            List<WriteDbData4MethodInfo> methodInfos = dbOperator.queryList(sql, WriteDbData4MethodInfo.class);
+            if (methodInfos == null || methodInfos.isEmpty()) {
+                log.warn("method not found in db: {}", method);
+                continue;
+            }
+            methodInfos = methodInfos.stream().filter(methodInfo -> {
+                if (!methodInfo.getFullMethod().startsWith(className)) {
+                    return false;
+                }
+                String objFullMethod = methodInfo.getFullMethod();
+                String[] objArr = objFullMethod.split(":");
+                String objClassName = objArr[0];
+                String objMethodAndParams = objArr[1];
+                String objParams = objMethodAndParams.substring(objMethodAndParams.indexOf("(") + 1, objMethodAndParams.indexOf(")"));
+                String params1 = Arrays.stream(objParams.split(",")).map(s -> s.lastIndexOf(".") > -1 ? s.substring(s.lastIndexOf(".") + 1).trim() : s.trim()).collect(Collectors.joining(","));
+                String params2 = Arrays.stream(methodParams.split(",")).map(String::trim).collect(Collectors.joining(","));
+                return params1.equals(params2) && objClassName.equals(className);
+            }).collect(Collectors.toList());
+            if (methodInfos.isEmpty()) {
+                log.warn("method not found in db: {}, result: {}", method, methodInfos);
+                continue;
+            }
+            if (methodInfos.size() > 1) {
+                log.warn("method find more! {}, result: {}", method, methodInfos);
+                continue;
+            }
+            set.add(methodInfos.get(0).getFullMethod());
+        }
+        log.info("结束替换方法: {}", set);
+        return set;
     }
 
     private static String parseEntry(String line) {

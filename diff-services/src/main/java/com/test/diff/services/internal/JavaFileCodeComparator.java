@@ -183,15 +183,15 @@ public class JavaFileCodeComparator implements ICodeComparator{
                     String param = paramType.toString();
                     if (ifFullParamName) {
                         param = Pattern.compile("<[^<>]*>").matcher(param).replaceAll("");
-                        if (paramType instanceof ReferenceType) {
-                            if (importClassNames.containsKey(param)) {  // import
-                                param = importClassNames.get(param);
-                            } else if(isLang(param)) {                  // java.lang
-                                param = "java.lang." + param;
-                            } else {                                    // same package
-                                param = packageName == null ? param : packageName + "." + param;
-                            }
-                        }
+//                        if (paramType instanceof ReferenceType) {
+//                            if (importClassNames.containsKey(param)) {  // import
+//                                param = importClassNames.get(param);
+//                            } else if(isLang(param)) {                  // java.lang
+//                                param = "java.lang." + param;
+//                            } else {                                    // same package
+//                                param = packageName == null ? param : packageName + "." + param;
+//                            }
+//                        }
                     }
                     params.append(param.replaceAll(" ", ""));
                     //和asm一致，每个参数都使用分号结尾
