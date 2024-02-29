@@ -56,6 +56,7 @@ public class CallGraphUtils {
 
         try {
             Map<String, List<List<String>>> allTraces = new LinkedHashMap<>();
+            Map<String, String> uriComment = new LinkedHashMap<>();
             File file = new File(reportDir);
             File methodsDir = Arrays.stream(file.listFiles()[0].listFiles()).filter(file1 -> file1.getName().equalsIgnoreCase("methods")).findFirst().orElse(null);
             for (File methodFile : methodsDir.listFiles()) {
@@ -67,9 +68,11 @@ public class CallGraphUtils {
                     if (uriMap != null) {
                         String uri = uriMap.get("uri");
                         String fullMethod = uriMap.get("fullMethod");
+                        String comment = uriMap.get("comment");
                         allTraces.computeIfAbsent(uri, (k) -> new LinkedList<>()).add(new LinkedList<String>() {{
                             add(fullMethod);
                         }});
+                        uriComment.put(uri, comment);
                     }
                 } else {
                     List<String> lines = FileUtil.readLines(methodFile, "UTF-8");
@@ -89,6 +92,11 @@ public class CallGraphUtils {
                         String entry = stack.peek();
                         String uri = parseEntry(entry);                 // 解析uri
                         allTraces.computeIfAbsent(uri, (k) -> new LinkedList<>()).add(new LinkedList<>(stack));
+                        if (isMapping(entry)) {
+                            String fullMethod = entry.split("@")[0];
+                            fullMethod = fullMethod.substring(fullMethod.indexOf("com"));
+                            uriComment.put(uri, findCommentByFullMethod(dbOperator, appName, fullMethod));
+                        }
                         int popSize = stack.size() - level;
                         for (int i = 0; i < popSize; i++) {
                             stack.pop();
@@ -99,14 +107,33 @@ public class CallGraphUtils {
                         String entry = stack.peek();
                         String uri = parseEntry(entry);                 // 解析uri
                         allTraces.computeIfAbsent(uri, (k) -> new LinkedList<>()).add(new LinkedList<>(stack));
+                        if (isMapping(entry)) {
+                            String fullMethod = entry.split("@")[0];
+                            fullMethod = fullMethod.substring(fullMethod.indexOf("com"));
+                            uriComment.put(uri, findCommentByFullMethod(dbOperator, appName, fullMethod));
+                        }
                     }
                 }
             }
-            return com.test.diff.services.base.controller.result.BaseResult.success(allTraces);
+            Map<String, Object> data = new HashMap<>();
+            data.put("allTraces", allTraces);
+            data.put("uriComment", uriComment);
+            return com.test.diff.services.base.controller.result.BaseResult.success(data);
         } finally {
             dbOperator.closeDs();
         }
 
+    }
+
+    private static String findCommentByFullMethod(DbOperator dbOperator, String appName, String fullMethod) {
+        String sql = "select " + "*" +
+                " from " + DbTableInfoEnum.DTIE_METHOD_ANNOTATION.getTableName() +
+                " where " + DC.COMMON_FULL_METHOD + " = ?" +
+                " and " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = 'io.swagger.annotations.ApiOperation'"
+                ;
+        sql = JACGSqlUtil.replaceAppNameInSql(sql, appName);
+        WriteDbData4MethodAnnotation writeDbData4MethodAnnotation = dbOperator.queryObject(sql, WriteDbData4MethodAnnotation.class, fullMethod);
+        return writeDbData4MethodAnnotation == null ? "" : writeDbData4MethodAnnotation.getAttributeValue();
     }
 
     private static Set<String> replaceMethods(DbOperator dbOperator, String appName, Set<String> methods) {
@@ -204,14 +231,15 @@ public class CallGraphUtils {
                 " from " + DbTableInfoEnum.DTIE_METHOD_ANNOTATION.getTableName() +
                 " where " + DC.COMMON_SIMPLE_CLASS_NAME + " = ?" +
 //                " and " + DC.COMMON_FULL_METHOD + " = ?" +
-                " and " + DC.MA_SPRING_MAPPING_ANNOTATION + " = 1" +
-                " and (" +
-                DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = '" + GetMapping.class.getName() + "'" +
-                " or " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = '" + PostMapping.class.getName() + "'" +
-                " or " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = '" + PutMapping.class.getName() + "'" +
-                " or " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = '" + PatchMapping.class.getName() + "'" +
-                " or " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = '" + DeleteMapping.class.getName() + "'" +
-                ")";
+//                " and " + DC.MA_SPRING_MAPPING_ANNOTATION + " = 1" +
+//                " and (" +
+//                DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = '" + GetMapping.class.getName() + "'" +
+//                " or " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = '" + PostMapping.class.getName() + "'" +
+//                " or " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = '" + PutMapping.class.getName() + "'" +
+//                " or " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = '" + PatchMapping.class.getName() + "'" +
+//                " or " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = '" + DeleteMapping.class.getName() + "'" +
+//                ")";
+                "";
         methodUriSql = JACGSqlUtil.replaceAppNameInSql(methodUriSql, appName);
         String[] arr = methodFullName.split(":");
         String simpleClassName = arr[0];
@@ -220,7 +248,9 @@ public class CallGraphUtils {
         if (methodUriObjs == null || methodUriObjs.isEmpty()) {
             return null;
         }
-        WriteDbData4MethodAnnotation methodUriObj = methodUriObjs.stream().filter(m -> m.getFullMethod().startsWith(fullMethod + "(")).findFirst().orElse(null);
+        WriteDbData4MethodAnnotation methodUriObj = methodUriObjs.stream().filter(m -> m.getSpringMappingAnnotation() == 1
+                && m.getFullMethod().startsWith(fullMethod + "(")
+                && isMapping(m.getAnnotationName())).findFirst().orElse(null);
         if (methodUriObj == null) {
             return null;
         }
@@ -230,9 +260,14 @@ public class CallGraphUtils {
         String httpMethod = arr1[arr1.length - 1].replace("Mapping", "");
         String finalBaseUri = baseUri;
         String finalMethodUri = methodUri;
+
+        WriteDbData4MethodAnnotation methodCommentObj = methodUriObjs.stream().filter(m -> m.getFullMethod().startsWith(fullMethod + "(")
+                && "io.swagger.annotations.ApiOperation".equals(m.getAnnotationName())).findFirst().orElse(null);
+        String comment = methodCommentObj == null ? "" : methodCommentObj.getAttributeValue();
         return new HashMap<String, String>() {{
             put("uri", httpMethod + ": " + finalBaseUri + finalMethodUri);
             put("fullMethod", fullMethod);
+            put("comment", comment);
         }};
     }
 
