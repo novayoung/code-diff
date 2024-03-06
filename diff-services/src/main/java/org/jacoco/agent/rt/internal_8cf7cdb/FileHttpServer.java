@@ -108,7 +108,7 @@ public class FileHttpServer implements HttpHandler {
         this.port = port;
     }
 
-    public static synchronized FileHttpServer start() {
+    public static synchronized FileHttpServer start(boolean local) {
         if (running) {
             return null;
         }
@@ -117,7 +117,10 @@ public class FileHttpServer implements HttpHandler {
         if (root.equals("~")) {
             root = System.getProperty("user.home");
         }
-        int port = tryPort(Integer.parseInt(System.getProperty("fileHttpServer.port", "6400")));
+        int port = Integer.parseInt(System.getProperty("fileHttpServer.port", "6400"));
+        if (local) {
+            port = tryPort(port);
+        }
         FileHttpServer fileHttpServer = new FileHttpServer(root, port);
         HttpServer server;
         try {
