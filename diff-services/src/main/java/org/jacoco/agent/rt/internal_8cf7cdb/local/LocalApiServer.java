@@ -3,6 +3,7 @@ package org.jacoco.agent.rt.internal_8cf7cdb.local;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import lombok.SneakyThrows;
 import org.jacoco.agent.rt.internal_8cf7cdb.FileHttpServer;
 import org.jacoco.cli.internal.JacocoApi;
 import org.jacoco.cli.internal.core.analysis.Analyzer;
@@ -17,7 +18,10 @@ import org.jacoco.cli.internal.report.html.HTMLFormatter;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -27,7 +31,7 @@ import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
-public class LocalApiServer implements HttpHandler {
+public class LocalApiServer implements HttpHandler, Runnable {
 
     private static final String BASE_PACKAGE = "com" + File.separator + "test"; //todo
 
@@ -35,7 +39,11 @@ public class LocalApiServer implements HttpHandler {
 
     private final int port;
 
+    private final int filePort;
+
     private final int dumpPort;
+
+    private final String workspace;
 
     private final String sourcePath;
 
@@ -47,32 +55,59 @@ public class LocalApiServer implements HttpHandler {
 
     private final String classHashFileName = "class.hash";
 
+    private Boolean refresh;
+    private Long refreshInterval;
+
+    private String appName;
+
+    private String dumpHost = "127.0.0.1";
+
     private static volatile boolean running = false;
 
-    LocalApiServer(String root, int port, int dumpPort, String sourcePath, String classPath) {
+    LocalApiServer(String root, int port, int filePort, int dumpPort, String sourcePath, String classPath, String workspace, String appName, Boolean refresh, Long refreshInterval) {
         this.root = root;
         this.port = port;
+        this.filePort = filePort;
         this.dumpPort = dumpPort;
         this.sourcePath = sourcePath;
         this.classPath = classPath;
+        this.workspace = workspace;
+        this.appName = appName;
+        this.refresh = refresh;
+        this.refreshInterval = refreshInterval;
         this.timestamp = System.currentTimeMillis();
     }
 
-    public static synchronized LocalApiServer start(int dumpPort) {
+    public static synchronized LocalApiServer start(int filePort, int dumpPort) {
         if (running) {
             return null;
         }
         running = true;
         String root = System.getProperty("coverage.local.root", System.getProperty("user.home"));
+//        int randomPort = 6000 + new Random().nextInt(1000);
         int port = FileHttpServer.tryPort(Integer.parseInt(System.getProperty("coverage.local.port", "6500")));
+        String workspace = System.getProperty("coverage.local.ws");
+        String app = System.getProperty("coverage.local.app");
         String sourcePath = System.getProperty("coverage.local.source", "");
         String classPath = System.getProperty("coverage.local.class", "");
+        Boolean refresh =  Boolean.valueOf(System.getProperty("coverage.local.refresh", "false"));
+        Long refreshInterval =  Long.valueOf(System.getProperty("coverage.local.refresh.interval", "5000"));
 
+        if (sourcePath.equals("")) {
+            List<String> sourcePaths = new LinkedList<>();
+            guessPath(workspace, "src" + File.separator + "main" + File.separator + "java", sourcePaths);
+            sourcePath = String.join(",", sourcePaths);
+        }
+        if (classPath.equals("")) {
+            List<String> classPaths = new LinkedList<>();
+            guessPath(workspace, "target" + File.separator + "classes", classPaths);
+            classPath = String.join(",", classPaths);
+        }
         if (sourcePath.equals("") || classPath.equals("")) {
             return null;
         }
 
-        LocalApiServer localApiServer = new LocalApiServer(root, port, dumpPort, sourcePath, classPath);
+        LocalApiServer localApiServer = new LocalApiServer(root, port, filePort, dumpPort, sourcePath, classPath, workspace, app, refresh, refreshInterval);
         HttpServer server;
         try {
             server = HttpServer.create(new InetSocketAddress(localApiServer.port), 0);
@@ -84,8 +119,24 @@ public class LocalApiServer implements HttpHandler {
 
         server.createContext("/", localApiServer);
         server.start();
-
+        new Thread(localApiServer).start();
         return localApiServer;
+    }
+
+    private static void guessPath(String workspace, String endWith, List<String> paths) {
+        File file = new File(workspace);
+        if (!file.isDirectory()) {
+            return;
+        }
+        if (file.getAbsolutePath().endsWith(endWith)) {
+            paths.add(file.getAbsolutePath());
+        }
+        for (File listFile : file.listFiles()) {
+            if (!listFile.isDirectory()) {
+                continue;
+            }
+            guessPath(listFile.getAbsolutePath(), endWith, paths);
+        }
     }
 
     @Override
@@ -101,12 +152,62 @@ public class LocalApiServer implements HttpHandler {
                 throw new RuntimeException(e);
             }
         }
+        if ("/config".equals(path)) {
+            try {
+                httpExchange.sendResponseHeaders(200, this.toString().getBytes().length);
+                httpExchange.getResponseBody().write(this.toString().getBytes(StandardCharsets.UTF_8));
+                httpExchange.getResponseBody().close();
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
+        if ("/clear".equals(path)) {
+            try {
+                clear();
+                httpExchange.sendResponseHeaders(200, this.toString().getBytes().length);
+                httpExchange.getResponseBody().write(this.toString().getBytes(StandardCharsets.UTF_8));
+                httpExchange.getResponseBody().close();
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
+        if ("/auto".equals(path)) {
+            try {
+                Map<String, String> queryMap = getQueryMap(httpExchange);
+                String refresh = queryMap.get("refresh");
+                if (refresh != null) {
+                    this.refresh = Boolean.valueOf(refresh);
+                }
+                String interval = queryMap.get("interval");
+                if (interval != null) {
+                    this.refreshInterval = Long.valueOf(interval);
+                }
+                httpExchange.sendResponseHeaders(200, String.valueOf(this.refresh).getBytes().length);
+                httpExchange.getResponseBody().write(String.valueOf(this.refresh).getBytes(StandardCharsets.UTF_8));
+                httpExchange.getResponseBody().close();
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
+    }
+
+    private void clear() {
+        deleteFolder(new File(root + File.separator + baseDir + File.separator + this.appName));
     }
 
     private void doReport(HttpExchange httpExchange) throws Exception {
         /*
          * get params
          */
+        Map<String, String> queryMap = getQueryMap(httpExchange);
+        String appName = queryMap.get("appName");
+        if (appName != null) {
+            this.appName = appName;
+        }
+        exec(queryMap.get("sign"));
+    }
+
+    private Map<String, String> getQueryMap(HttpExchange httpExchange) {
         String query = httpExchange.getRequestURI().getQuery();
         Map<String, String> queryMap = new HashMap<>();
         if (query != null) {
@@ -115,14 +216,15 @@ public class LocalApiServer implements HttpHandler {
                 queryMap.put(arr[0], arr[1]);
             });
         }
-        String dumpPort = queryMap.get("dumpPort");
-        String dumpHost = queryMap.get("dumpHost");
-        String appName = queryMap.get("appName");
+        return queryMap;
+    }
+
+    private void exec(String sign) throws Exception {
 
         /*
          * 1. dump data to timestamp
          */
-        String timestampDirPath = root + File.separator + baseDir + File.separator + appName + File.separator + timestamp;
+        String timestampDirPath = root + File.separator + baseDir + File.separator + this.appName + File.separator + timestamp;
         String timestampExecFilePath = timestampDirPath + File.separator + "dump.exec";
         String timestampMergedFilePath = timestampDirPath + File.separator + "merged.exec";
         String timestampClassIdFilePath = timestampDirPath + File.separator + classHashFileName;
@@ -149,12 +251,12 @@ public class LocalApiServer implements HttpHandler {
         }
         addClassFiles(timestampClassDirPath, timestampClassFileList);
         Files.deleteIfExists(Paths.get(timestampExecFilePath));
-        JacocoApi.execute("dump", "--destfile", timestampExecFilePath, "--address", dumpHost, "--port", dumpPort, "--reset");
+        JacocoApi.execute("dump", "--destfile", timestampExecFilePath, "--address", this.dumpHost, "--port", this.dumpPort + "");
 
         /*
          * 3. merge merged data to timestamp
          */
-        String orgDirPath = root + File.separator + baseDir + File.separator + appName + File.separator + "org";
+        String orgDirPath = root + File.separator + baseDir + File.separator + this.appName + File.separator + "org";
         String orgExecFilePath = orgDirPath + File.separator + "dump.exec";
         String orgClassIdFilePath = orgDirPath + File.separator + classHashFileName;
         String orgClassDirPath = orgDirPath + File.separator + "class";
@@ -215,15 +317,32 @@ public class LocalApiServer implements HttpHandler {
         }
 
         /*
+         * post to server
+         */
+        String requestUrl = "http://test-arch-framework-admin.intramirror.cn/api/rpc/coverage/local?sign + " + sign;
+        URL url = new URL(requestUrl);
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setRequestMethod("POST");
+        connection.setDoOutput(true);
+        connection.setRequestProperty("Content-Type", "application/json");
+        try (OutputStream outputStream = connection.getOutputStream()) {
+            String body = "[\"" + this.toString() + "\"]";
+            byte[] postDataBytes = body.getBytes(StandardCharsets.UTF_8);
+            outputStream.write(postDataBytes, 0, postDataBytes.length);
+            outputStream.flush();
+        }
+        connection.disconnect();
+
+        /*
          * 5. generate report to root
          */
-        String reportDirPath = root + File.separator + baseDir + File.separator + appName + File.separator + "report";
+        String reportDirPath = root + File.separator + baseDir + File.separator + this.appName + File.separator + "report";
         deleteFolder(new File(reportDirPath));
         ExecFileLoader reportLoader = new ExecFileLoader();
         reportLoader.load(new File(orgExecFilePath));
         List<File> reportClassFiles = new LinkedList<>();
         addClassFiles(orgClassDirPath, reportClassFiles);
-        IBundleCoverage bundle = analyze(appName, reportLoader.getExecutionDataStore(), reportClassFiles);
+        IBundleCoverage bundle = analyze(this.appName, reportLoader.getExecutionDataStore(), reportClassFiles);
         writeReports(bundle, reportLoader, new File(reportDirPath));
     }
 
@@ -349,4 +468,32 @@ public class LocalApiServer implements HttpHandler {
         return port;
     }
 
+    @Override
+    public String toString() {
+        return "LocalApiServer{" +
+                "root='" + root + '\'' +
+                ", port=" + port +
+                ", filePort=" + filePort +
+                ", dumpPort=" + dumpPort +
+                ", workspace='" + workspace + '\'' +
+                ", sourcePath='" + sourcePath + '\'' +
+                ", classPath='" + classPath + '\'' +
+                ", timestamp=" + timestamp +
+                ", baseDir='" + baseDir + '\'' +
+                ", classHashFileName='" + classHashFileName + '\'' +
+                ", appName='" + appName + '\'' +
+                '}';
+    }
+
+    @SneakyThrows
+    @Override
+    public void run() {
+        while (true) {
+            Thread.sleep(refreshInterval);
+            if (this.appName == null || !refresh) {
+                return;
+            }
+            exec(null);
+        }
+    }
 }

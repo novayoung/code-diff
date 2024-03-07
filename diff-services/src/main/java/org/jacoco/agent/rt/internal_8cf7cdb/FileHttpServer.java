@@ -114,6 +114,9 @@ public class FileHttpServer implements HttpHandler {
         }
         running = true;
         String root = System.getProperty("fileHttpServer.root", "/");
+        if (local && root.equals("/")) {
+            root = "~";
+        }
         if (root.equals("~")) {
             root = System.getProperty("user.home");
         }
