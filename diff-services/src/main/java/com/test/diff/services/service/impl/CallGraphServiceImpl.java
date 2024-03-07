@@ -4,6 +4,7 @@ import cn.hutool.core.io.FileUtil;
 import cn.hutool.http.HttpUtil;
 import com.test.diff.services.base.controller.result.BaseResult;
 import com.test.diff.services.consts.FileConst;
+import com.test.diff.services.enums.StatusCode;
 import com.test.diff.services.params.CallGraphParams;
 import com.test.diff.services.service.CallGraphService;
 import com.test.diff.services.utils.CallGraphUtils;
@@ -19,12 +20,16 @@ public class CallGraphServiceImpl implements CallGraphService {
 
     private Map<String, Object> locks = new HashMap<>();
 
+    private Map<String, Boolean> runningJob = new HashMap<>();
+
     @Override
     public void refreshDB(CallGraphParams params) {
         String service = params.getService().toLowerCase();
         Object lock = locks.computeIfAbsent(service, k -> new Object());
         synchronized (lock) {
+            runningJob.put(service, true);
             doRefreshDB(params);
+            runningJob.remove(service);
         }
     }
 
@@ -71,6 +76,9 @@ public class CallGraphServiceImpl implements CallGraphService {
     public BaseResult findCaller(CallGraphParams params) {
         String service = params.getService().toLowerCase();
         Object lock = locks.computeIfAbsent(service, k -> new Object());
+        if (runningJob.containsKey(service)) {
+            return BaseResult.error(StatusCode.OTHER_ERROR, "数据库刷新中，请稍后");
+        }
         synchronized (lock) {
             return doFindCaller(params);
         }
@@ -91,6 +99,9 @@ public class CallGraphServiceImpl implements CallGraphService {
     public BaseResult findCallee(CallGraphParams params) {
         String service = params.getService().toLowerCase();
         Object lock = locks.computeIfAbsent(service, k -> new Object());
+        if (runningJob.containsKey(service)) {
+            return BaseResult.error(StatusCode.OTHER_ERROR, "数据库刷新中，请稍后");
+        }
         synchronized (lock) {
             return doFindCallee(params);
         }

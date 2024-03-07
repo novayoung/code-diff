@@ -128,12 +128,32 @@ public class CallGraphUtils {
     private static String findCommentByFullMethod(DbOperator dbOperator, String appName, String fullMethod) {
         String sql = "select " + "*" +
                 " from " + DbTableInfoEnum.DTIE_METHOD_ANNOTATION.getTableName() +
-                " where " + DC.COMMON_FULL_METHOD + " = ?" +
-                " and " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = 'io.swagger.annotations.ApiOperation'"
+                " where " + DC.COMMON_FULL_METHOD + " = ?"
+                //" and " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = 'io.swagger.annotations.ApiOperation'"
                 ;
         sql = JACGSqlUtil.replaceAppNameInSql(sql, appName);
-        WriteDbData4MethodAnnotation writeDbData4MethodAnnotation = dbOperator.queryObject(sql, WriteDbData4MethodAnnotation.class, fullMethod);
-        return writeDbData4MethodAnnotation == null ? "" : writeDbData4MethodAnnotation.getAttributeValue();
+        List<WriteDbData4MethodAnnotation> list = dbOperator.queryList(sql, WriteDbData4MethodAnnotation.class, fullMethod);
+        if (list == null || list.isEmpty()) {
+            return "";
+        }
+        WriteDbData4MethodAnnotation writeDbData4MethodAnnotation = list.stream().filter(e -> "io.swagger.annotations.ApiOperation".equalsIgnoreCase(e.getAnnotationName()) && "value".equalsIgnoreCase(e.getAttributeName())).findFirst().orElse(null);
+        String swaggerValue = writeDbData4MethodAnnotation == null ? "" : writeDbData4MethodAnnotation.getAttributeValue();
+        writeDbData4MethodAnnotation = list.stream().filter(e -> "com.xxl.job.core.handler.annotation.XxlJob".equalsIgnoreCase(e.getAnnotationName()) && "value".equalsIgnoreCase(e.getAttributeName())).findFirst().orElse(null);
+        String xxlJobValue = writeDbData4MethodAnnotation == null ? "" : "xxlJob(" + writeDbData4MethodAnnotation.getAttributeValue() + ")";
+        writeDbData4MethodAnnotation = list.stream().filter(e -> "com.intramirror.framework.mq.kafka.annotations.FrameworkKafkaListener".equalsIgnoreCase(e.getAnnotationName()) && "topics".equalsIgnoreCase(e.getAttributeName())).findFirst().orElse(null);
+        String kafkaValue = writeDbData4MethodAnnotation == null ? "" : "Kafka(" + writeDbData4MethodAnnotation.getAttributeValue() + ")";
+
+        List<String> commentList = new LinkedList<>();
+        if (!swaggerValue.equalsIgnoreCase("")) {
+            commentList.add(swaggerValue);
+        }
+        if (!xxlJobValue.equalsIgnoreCase("")) {
+            commentList.add(xxlJobValue);
+        }
+        if (!kafkaValue.equalsIgnoreCase("")) {
+            commentList.add(kafkaValue);
+        }
+        return String.join(" | ", commentList);
     }
 
     private static Set<String> replaceMethods(DbOperator dbOperator, String appName, Set<String> methods) {
@@ -213,6 +233,7 @@ public class CallGraphUtils {
                 line.contains(DeleteMapping.class.getName());
     }
 
+    //todo
     private static Map<String, String> getApiByControllerMethod(DbOperator dbOperator, String appName, String methodFullName) {
         String baseUriSql = "select " + "*" +
                 " from " + DbTableInfoEnum.DTIE_CLASS_ANNOTATION.getTableName() +
@@ -220,54 +241,82 @@ public class CallGraphUtils {
                 " and " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = ?";
         baseUriSql = JACGSqlUtil.replaceAppNameInSql(baseUriSql, appName);
         WriteDbData4ClassAnnotation classAnnotation = dbOperator.queryObject(baseUriSql, WriteDbData4ClassAnnotation.class, methodFullName.split(":")[0], "org.springframework.web.bind.annotation.RequestMapping");
-        if (classAnnotation == null) {
-            return null;
+        String baseUri = "";
+        if (classAnnotation != null) {
+            baseUri = classAnnotation.getAttributeValue().replace("\\\"", "");
+            baseUri = baseUri.substring(2, baseUri.length() - 2);
         }
-        String baseUri = classAnnotation.getAttributeValue().replace("\\\"", "");
-        baseUri = baseUri.substring(2, baseUri.length() - 2);
 
-        String className = classAnnotation.getClassName();
-        String methodUriSql = "select " + "*" +
-                " from " + DbTableInfoEnum.DTIE_METHOD_ANNOTATION.getTableName() +
-                " where " + DC.COMMON_SIMPLE_CLASS_NAME + " = ?" +
-//                " and " + DC.COMMON_FULL_METHOD + " = ?" +
-//                " and " + DC.MA_SPRING_MAPPING_ANNOTATION + " = 1" +
-//                " and (" +
-//                DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = '" + GetMapping.class.getName() + "'" +
-//                " or " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = '" + PostMapping.class.getName() + "'" +
-//                " or " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = '" + PutMapping.class.getName() + "'" +
-//                " or " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = '" + PatchMapping.class.getName() + "'" +
-//                " or " + DC.COMMON_ANNOTATION_ANNOTATION_NAME + " = '" + DeleteMapping.class.getName() + "'" +
-//                ")";
-                "";
+        String methodUriSql = "select " + "*" + " from " + DbTableInfoEnum.DTIE_METHOD_ANNOTATION.getTableName() + " where " + DC.COMMON_SIMPLE_CLASS_NAME + " = ?";
         methodUriSql = JACGSqlUtil.replaceAppNameInSql(methodUriSql, appName);
         String[] arr = methodFullName.split(":");
         String simpleClassName = arr[0];
-        String fullMethod = className + ":" + arr[1];
         List<WriteDbData4MethodAnnotation> methodUriObjs = dbOperator.queryList(methodUriSql, WriteDbData4MethodAnnotation.class, simpleClassName);
         if (methodUriObjs == null || methodUriObjs.isEmpty()) {
-            return null;
+            return new HashMap<String, String>() {{
+                put("uri", methodFullName);
+                put("fullMethod", methodFullName);
+                put("comment", "");
+            }};
         }
-        WriteDbData4MethodAnnotation methodUriObj = methodUriObjs.stream().filter(m -> m.getSpringMappingAnnotation() == 1
-                && m.getFullMethod().startsWith(fullMethod + "(")
-                && isMapping(m.getAnnotationName())).findFirst().orElse(null);
-        if (methodUriObj == null) {
-            return null;
-        }
-        String methodUri = methodUriObj.getAttributeValue();
-        methodUri = methodUri.substring(2, methodUri.length() - 2);
-        String[] arr1 = methodUriObj.getAnnotationName().split("\\.");
-        String httpMethod = arr1[arr1.length - 1].replace("Mapping", "");
-        String finalBaseUri = baseUri;
-        String finalMethodUri = methodUri;
+        String fullMethodMissFullParams = methodUriObjs.get(0).getFullMethod().split(":")[0] + ":" + arr[1];
 
-        WriteDbData4MethodAnnotation methodCommentObj = methodUriObjs.stream().filter(m -> m.getFullMethod().startsWith(fullMethod + "(")
-                && "io.swagger.annotations.ApiOperation".equals(m.getAnnotationName())).findFirst().orElse(null);
-        String comment = methodCommentObj == null ? "" : methodCommentObj.getAttributeValue();
+
+        /*
+         * Rest annotation
+         */
+        WriteDbData4MethodAnnotation restMethodUriObj = methodUriObjs.stream().filter(m -> m.getSpringMappingAnnotation() == 1
+                && m.getFullMethod().startsWith(fullMethodMissFullParams + "(")
+                && isMapping(m.getAnnotationName())).findFirst().orElse(null);
+        if (restMethodUriObj != null) {
+            String fullMethod = restMethodUriObj.getFullMethod();
+            String methodUri = restMethodUriObj.getAttributeValue();
+            methodUri = methodUri.substring(2, methodUri.length() - 2);
+            String[] arr1 = restMethodUriObj.getAnnotationName().split("\\.");
+            String httpMethod = arr1[arr1.length - 1].replace("Mapping", "");
+            String finalBaseUri = baseUri;
+            String finalMethodUri = methodUri;
+
+            WriteDbData4MethodAnnotation methodCommentObj = methodUriObjs.stream().filter(m -> m.getFullMethod().equalsIgnoreCase(fullMethod)
+                    && "io.swagger.annotations.ApiOperation".equals(m.getAnnotationName())).findFirst().orElse(null);
+            String comment = methodCommentObj == null ? "" : methodCommentObj.getAttributeValue();
+            return new HashMap<String, String>() {{
+                put("uri", httpMethod + ": " + finalBaseUri + finalMethodUri);
+                put("fullMethod", fullMethodMissFullParams);
+                put("comment", comment);
+            }};
+        }
+
+        /*
+         * XXL Job Annotation
+         */
+        WriteDbData4MethodAnnotation xxlJobMethodUriObj = methodUriObjs.stream().filter(m -> m.getFullMethod().startsWith(fullMethodMissFullParams + "(")
+                &&  "com.xxl.job.core.handler.annotation.XxlJob".equals(m.getAnnotationName())).findFirst().orElse(null);
+        if (xxlJobMethodUriObj != null) {
+            return new HashMap<String, String>() {{
+                put("uri", fullMethodMissFullParams);
+                put("fullMethod", fullMethodMissFullParams);
+                put("comment", "XXLJob(" + xxlJobMethodUriObj.getAttributeValue() + ")");
+            }};
+        }
+
+        /*
+         * Kafka Consumer Annotation
+         */
+        WriteDbData4MethodAnnotation kafkaJobMethodUriObj = methodUriObjs.stream().filter(m -> m.getFullMethod().startsWith(fullMethodMissFullParams + "(")
+                &&  "com.intramirror.framework.mq.kafka.annotations.FrameworkKafkaListener".equals(m.getAnnotationName())).findFirst().orElse(null);
+        if (kafkaJobMethodUriObj != null) {
+            return new HashMap<String, String>() {{
+                put("uri", fullMethodMissFullParams);
+                put("fullMethod", fullMethodMissFullParams);
+                put("comment", "Kafka(" + kafkaJobMethodUriObj.getAttributeValue() + ")");
+            }};
+        }
+
         return new HashMap<String, String>() {{
-            put("uri", httpMethod + ": " + finalBaseUri + finalMethodUri);
-            put("fullMethod", fullMethod);
-            put("comment", comment);
+            put("uri", fullMethodMissFullParams);
+            put("fullMethod", fullMethodMissFullParams);
+            put("comment", "");
         }};
     }
 
