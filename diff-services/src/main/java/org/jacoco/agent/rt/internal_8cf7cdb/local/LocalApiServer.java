@@ -1,5 +1,7 @@
 package org.jacoco.agent.rt.internal_8cf7cdb.local;
 
+import cn.hutool.core.io.FileUtil;
+import cn.hutool.core.util.ZipUtil;
 import cn.hutool.crypto.SecureUtil;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ast.CompilationUnit;
@@ -245,6 +247,25 @@ public class LocalApiServer implements HttpHandler, Runnable {
                 }
                 httpExchange.sendResponseHeaders(200, String.valueOf(this.refresh).getBytes().length);
                 httpExchange.getResponseBody().write(String.valueOf(this.refresh).getBytes(StandardCharsets.UTF_8));
+                httpExchange.getResponseBody().close();
+            } catch (Exception e) {
+                e.printStackTrace();
+                throw new RuntimeException(e);
+            }
+        }
+        if ("/export".equals(path)) {
+            try {
+                Map<String, String> queryMap = getQueryMap(httpExchange);
+                String app = queryMap.get("app");
+                String branch = queryMap.get("branch");
+                String reportZipPath = root + File.separator + baseDir + File.separator + app + File.separator + branch + File.separator + "exportReport.zip";
+                if (FileUtil.exist(reportZipPath)) {
+                    FileUtil.del(reportZipPath);
+                }
+                String reportDirPath = root + File.separator + baseDir + File.separator + app + File.separator + branch + File.separator + "report";
+                ZipUtil.zip(reportDirPath, reportZipPath);
+                httpExchange.sendResponseHeaders(200, 0);
+                httpExchange.getResponseBody().write("".getBytes());
                 httpExchange.getResponseBody().close();
             } catch (Exception e) {
                 e.printStackTrace();
