@@ -1,9 +1,21 @@
 package org.jacoco.agent.rt.internal_8cf7cdb.local;
 
+import cn.hutool.crypto.SecureUtil;
+import com.github.javaparser.JavaParser;
+import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.ImportDeclaration;
+import com.github.javaparser.ast.NodeList;
+import com.github.javaparser.ast.PackageDeclaration;
+import com.github.javaparser.ast.body.*;
+import com.github.javaparser.ast.type.Type;
+import com.github.javaparser.ast.visitor.VoidVisitorAdapter;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
-import lombok.SneakyThrows;
+import com.test.diff.common.domain.ClassInfo;
+import com.test.diff.common.domain.MethodInfo;
+import com.test.diff.common.enums.DiffResultTypeEnum;
+import lombok.*;
 import org.jacoco.agent.rt.internal_8cf7cdb.FileHttpServer;
 import org.jacoco.cli.internal.JacocoApi;
 import org.jacoco.cli.internal.core.analysis.Analyzer;
@@ -12,13 +24,14 @@ import org.jacoco.cli.internal.core.analysis.IBundleCoverage;
 import org.jacoco.cli.internal.core.analysis.IClassCoverage;
 import org.jacoco.cli.internal.core.data.ExecutionData;
 import org.jacoco.cli.internal.core.data.ExecutionDataStore;
+import org.jacoco.cli.internal.core.data.MethodProbesInfo;
+import org.jacoco.cli.internal.core.internal.analysis.ClassCoverageImpl;
 import org.jacoco.cli.internal.core.tools.ExecFileLoader;
+import org.jacoco.cli.internal.core.tools.MethodUriAdapter;
 import org.jacoco.cli.internal.report.*;
 import org.jacoco.cli.internal.report.html.HTMLFormatter;
 
-import java.io.File;
-import java.io.IOException;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.URL;
@@ -31,9 +44,12 @@ import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
+@ToString
 public class LocalApiServer implements HttpHandler, Runnable {
 
     private static final String BASE_PACKAGE = "com" + File.separator + "test"; //todo
+
+    private static final String SRC_FLAG = File.separator + "src" + File.separator + "main" + File.separator + "java";
 
     private final String root;
 
@@ -60,11 +76,17 @@ public class LocalApiServer implements HttpHandler, Runnable {
 
     private String appName;
 
-    private String dumpHost = "127.0.0.1";
+    private final String dumpHost = "127.0.0.1";
+
+    private final String mergeLevel; // class / method
+
+    private final String curBranch;
+
+    private transient Thread refreshThread;
 
     private static volatile boolean running = false;
 
-    LocalApiServer(String root, int port, int filePort, int dumpPort, String sourcePath, String classPath, String workspace, String appName, Boolean refresh, Long refreshInterval) {
+    LocalApiServer(String root, int port, int filePort, int dumpPort, String sourcePath, String classPath, String workspace, String appName, Boolean refresh, Long refreshInterval, String mergeLevel, String curBranch) {
         this.root = root;
         this.port = port;
         this.filePort = filePort;
@@ -75,6 +97,8 @@ public class LocalApiServer implements HttpHandler, Runnable {
         this.appName = appName;
         this.refresh = refresh;
         this.refreshInterval = refreshInterval;
+        this.mergeLevel = mergeLevel;
+        this.curBranch = curBranch;
         this.timestamp = System.currentTimeMillis();
     }
 
@@ -92,6 +116,9 @@ public class LocalApiServer implements HttpHandler, Runnable {
         String classPath = System.getProperty("coverage.local.class", "");
         Boolean refresh =  Boolean.valueOf(System.getProperty("coverage.local.refresh", "false"));
         Long refreshInterval =  Long.valueOf(System.getProperty("coverage.local.refresh.interval", "5000"));
+        String mergeLevel = System.getProperty("coverage.local.mergeLevel", "method");
+        String curBranch = execCmd(workspace, "git rev-parse --abbrev-ref HEAD");
+        System.setProperty("eureka.instance.metadata-map.coverageLocalBranch", curBranch);
 
         if (sourcePath.equals("")) {
             List<String> sourcePaths = new LinkedList<>();
@@ -107,9 +134,13 @@ public class LocalApiServer implements HttpHandler, Runnable {
             return null;
         }
 
-        LocalApiServer localApiServer = new LocalApiServer(root, port, filePort, dumpPort, sourcePath, classPath, workspace, app, refresh, refreshInterval);
+        LocalApiServer localApiServer = new LocalApiServer(root, port, filePort, dumpPort, sourcePath, classPath, workspace, app, refresh, refreshInterval, mergeLevel, curBranch);
         HttpServer server;
         try {
+            System.out.println("coverage local port: " + localApiServer.port);
+            System.out.println("coverage local dumpPort: " + localApiServer.dumpPort);
+            System.out.println("coverage local dumpHost: " + localApiServer.dumpHost);
+            System.out.println("coverage local filePort: " + localApiServer.filePort);
             server = HttpServer.create(new InetSocketAddress(localApiServer.port), 0);
         } catch (IOException e) {
             e.printStackTrace();
@@ -119,8 +150,25 @@ public class LocalApiServer implements HttpHandler, Runnable {
 
         server.createContext("/", localApiServer);
         server.start();
-        new Thread(localApiServer).start();
         return localApiServer;
+    }
+
+    @SneakyThrows
+    private static String execCmd(String workspace, String cmd) {
+        String os = System.getProperty("os.name");
+        Process process;
+        if (os.toLowerCase().contains("windows")) {
+            process = Runtime.getRuntime().exec(new String[]{"cmd", "/c", "cd " + workspace + " && " + cmd});
+        } else {
+            process = Runtime.getRuntime().exec(new String[]{"sh", "-c", "cd " + workspace + " | " + cmd});
+        }
+        BufferedReader stdOutput = new BufferedReader(new InputStreamReader(process.getInputStream()));
+        StringBuilder stringBuilder = new StringBuilder();
+        String s;
+        while ((s = stdOutput.readLine()) != null) {
+            stringBuilder.append(s);
+        }
+        return stringBuilder.toString();
     }
 
     private static void guessPath(String workspace, String endWith, List<String> paths) {
@@ -140,7 +188,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
     }
 
     @Override
-    public void handle(HttpExchange httpExchange) {
+    public synchronized void handle(HttpExchange httpExchange) {
         String path = httpExchange.getRequestURI().getPath();
         if ("/report".equals(path)) {
             try {
@@ -149,6 +197,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
                 httpExchange.getResponseBody().write("".getBytes(StandardCharsets.UTF_8));
                 httpExchange.getResponseBody().close();
             } catch (Exception e) {
+                e.printStackTrace();
                 throw new RuntimeException(e);
             }
         }
@@ -158,16 +207,23 @@ public class LocalApiServer implements HttpHandler, Runnable {
                 httpExchange.getResponseBody().write(this.toString().getBytes(StandardCharsets.UTF_8));
                 httpExchange.getResponseBody().close();
             } catch (Exception e) {
+                e.printStackTrace();
                 throw new RuntimeException(e);
             }
         }
         if ("/clear".equals(path)) {
             try {
+                Map<String, String> queryMap = getQueryMap(httpExchange);
+                String appName = queryMap.get("app");
+                if (appName != null) {
+                    this.appName = appName;
+                }
                 clear();
                 httpExchange.sendResponseHeaders(200, this.toString().getBytes().length);
                 httpExchange.getResponseBody().write(this.toString().getBytes(StandardCharsets.UTF_8));
                 httpExchange.getResponseBody().close();
             } catch (Exception e) {
+                e.printStackTrace();
                 throw new RuntimeException(e);
             }
         }
@@ -182,17 +238,23 @@ public class LocalApiServer implements HttpHandler, Runnable {
                 if (interval != null) {
                     this.refreshInterval = Long.valueOf(interval);
                 }
+                if (this.refresh && this.refreshThread == null) {
+                    this.refreshThread = new Thread(this);
+                    this.refreshThread.setName("CoverageRefreshThread");
+                    this.refreshThread.start();
+                }
                 httpExchange.sendResponseHeaders(200, String.valueOf(this.refresh).getBytes().length);
                 httpExchange.getResponseBody().write(String.valueOf(this.refresh).getBytes(StandardCharsets.UTF_8));
                 httpExchange.getResponseBody().close();
             } catch (Exception e) {
+                e.printStackTrace();
                 throw new RuntimeException(e);
             }
         }
     }
 
     private void clear() {
-        deleteFolder(new File(root + File.separator + baseDir + File.separator + this.appName));
+        deleteFolder(new File(root + File.separator + baseDir + File.separator + this.appName + File.separator + this.curBranch));
     }
 
     private void doReport(HttpExchange httpExchange) throws Exception {
@@ -200,7 +262,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
          * get params
          */
         Map<String, String> queryMap = getQueryMap(httpExchange);
-        String appName = queryMap.get("appName");
+        String appName = queryMap.get("app");
         if (appName != null) {
             this.appName = appName;
         }
@@ -224,19 +286,23 @@ public class LocalApiServer implements HttpHandler, Runnable {
         /*
          * 1. dump data to timestamp
          */
-        String timestampDirPath = root + File.separator + baseDir + File.separator + this.appName + File.separator + timestamp;
+        String timestampDirPath = root + File.separator + baseDir + File.separator + this.appName +File.separator + curBranch + File.separator + timestamp;
         String timestampExecFilePath = timestampDirPath + File.separator + "dump.exec";
         String timestampMergedFilePath = timestampDirPath + File.separator + "merged.exec";
         String timestampClassIdFilePath = timestampDirPath + File.separator + classHashFileName;
         String timestampClassDirPath = timestampDirPath + File.separator + "class";
+        String timestampSourceDirPath = timestampDirPath + File.separator + "src";
+
         List<File> timestampClassFileList = new LinkedList<>();
 
         File timestampDirFile = new File(timestampDirPath);
         Map<String, String> timestampClassNameIdMap = new HashMap<>();
+        Map<String, String> packageMapping = new HashMap<>();
+
         if (!timestampDirFile.exists()) {
             timestampDirFile.mkdirs();
             /*
-             * 2. get class hash to timestamp, //todo
+             * 2.1 Generate class file hash to timestamp
              */
             List<String> classIdNameList = new LinkedList<>();
             for (String classDir : classPath.split(",")) {
@@ -248,7 +314,48 @@ public class LocalApiServer implements HttpHandler, Runnable {
                 Files.write(Paths.get(timestampClassIdFilePath), content.getBytes(StandardCharsets.UTF_8));
                 timestampClassNameIdMap = classIdNameList.stream().map(e -> e.split(":")).collect(Collectors.toMap(e -> e[1], e -> e[0]));
             }
+
+            /*
+             * 2.2 Copy source file
+             */
+            for (String sourceDir : sourcePath.split(",")) {
+                sourceDir = sourceDir.trim();
+                String packagePath = sourceDir.substring(0, sourceDir.lastIndexOf(SRC_FLAG));
+                String packageName = packagePath.substring(packagePath.lastIndexOf(File.separator) + 1);
+                copySourceFile(sourceDir, timestampSourceDirPath, packageName, packageMapping);
+            }
         }
+
+        /*
+         * pull master branch code
+         */
+        List<ClassInfo> diffClassInfos = new LinkedList<>();
+        if (!"master".equals(this.curBranch)) {
+            String masterCloneSourceDir = root + File.separator + baseDir + File.separator + this.appName +File.separator + "master_clone";
+            File masterSourceFile = new File(masterCloneSourceDir);
+            String gitUrl = execCmd(this.workspace,"git config --get remote.origin.url");
+            if (masterSourceFile.exists()) {
+                execCmd(masterCloneSourceDir, "git pull");
+            } else {
+                masterSourceFile.mkdirs();
+                execCmd(masterCloneSourceDir, "git clone " + gitUrl);
+            }
+            List<String> masterSourcePaths = new LinkedList<>();
+            guessPath(masterCloneSourceDir, "src" + File.separator + "main" + File.separator + "java", masterSourcePaths);
+            String destMasterSourceDir = root + File.separator + baseDir + File.separator + this.appName +File.separator + "master_code";
+            File destMasterSourceDirFile = new File(destMasterSourceDir);
+            if (destMasterSourceDirFile.exists()) {
+                deleteFolder(destMasterSourceDirFile);
+            }
+            for (String masterSourcePath : masterSourcePaths) {
+                copySourceFile(masterSourcePath.trim(), destMasterSourceDir, null, null);
+            }
+            getDiffCode(timestampSourceDirPath, timestampSourceDirPath, destMasterSourceDir, diffClassInfos, packageMapping);
+        }
+        if (!diffClassInfos.isEmpty()) {
+            CoverageBuilder.setDiffList(diffClassInfos);
+        }
+
         addClassFiles(timestampClassDirPath, timestampClassFileList);
         Files.deleteIfExists(Paths.get(timestampExecFilePath));
         JacocoApi.execute("dump", "--destfile", timestampExecFilePath, "--address", this.dumpHost, "--port", this.dumpPort + "");
@@ -256,10 +363,11 @@ public class LocalApiServer implements HttpHandler, Runnable {
         /*
          * 3. merge merged data to timestamp
          */
-        String orgDirPath = root + File.separator + baseDir + File.separator + this.appName + File.separator + "org";
+        String orgDirPath = root + File.separator + baseDir + File.separator + this.appName + File.separator + this.curBranch + File.separator + "org";
         String orgExecFilePath = orgDirPath + File.separator + "dump.exec";
         String orgClassIdFilePath = orgDirPath + File.separator + classHashFileName;
         String orgClassDirPath = orgDirPath + File.separator + "class";
+        String orgSourceDirPath = orgDirPath + File.separator + "src";
         List<File> orgClassFileList = new LinkedList<>();
 
         Map<String, String> orgClassNameIdMap;
@@ -280,29 +388,43 @@ public class LocalApiServer implements HttpHandler, Runnable {
             timestampExecFileLoader.load(new File(timestampExecFilePath));
             ExecutionDataStore timestampExecutionDataStore = timestampExecFileLoader.getExecutionDataStore();
             Collection<ExecutionData> timestampExecutionDataCollection = timestampExecutionDataStore.getContents();
+            Map<String, IClassCoverage> timestampIClassCoverageMap = classAnalysis(timestampExecutionDataStore, timestampClassFileList);
 
             ExecFileLoader orgExecFileLoader = new ExecFileLoader();
             orgExecFileLoader.load(new File(orgExecFilePath));
             ExecutionDataStore orgExecutionDataStore = orgExecFileLoader.getExecutionDataStore();
+            Map<String, IClassCoverage> orgIClassCoverageMap = classAnalysis(orgExecutionDataStore, orgClassFileList);
+
 
             for (ExecutionData timestampData : timestampExecutionDataCollection) {
-                if (modifiedClass.contains(timestampData.getName().replace(File.separator, "."))) {
-                    timestampData.reset();
-                    continue;
-                }
                 for (ExecutionData orgData : orgExecutionDataStore.getContents()) {
                     if (orgData.getName().equals(timestampData.getName())) {
-                        boolean[] timestampProbes = timestampData.getProbes();
-                        boolean[] orgProbes = orgData.getProbes();
-                        for (int i = 0; i <timestampProbes.length; i++) {
-                            timestampProbes[i] = timestampProbes[i] | orgProbes[i];
+                        String classDataName = timestampData.getName();
+                        String className = classDataName.replace("/", ".");
+                        if (modifiedClass.contains(className)) {
+                            if (mergeLevel.equals("class")) {
+                                timestampData.reset();
+                                continue;
+                            }
+                            String relativeClassPath = timestampData.getName().replace("/", File.separator) + ".java";
+                            String orgSourcePath = orgSourceDirPath + File.separator + relativeClassPath;
+                            String timestampSourcePath = timestampSourceDirPath + File.separator + relativeClassPath;
+                            if (new File(orgSourcePath).exists() && new File(timestampSourcePath).exists()) {
+                                resetProbe(className, orgData, orgSourcePath, (ClassCoverageImpl) orgIClassCoverageMap.get(classDataName), timestampData, timestampSourcePath, (ClassCoverageImpl) timestampIClassCoverageMap.get(classDataName), timestampExecutionDataStore);
+                            }
+                        } else {
+                            boolean[] timestampProbes = timestampData.getProbes();
+                            boolean[] orgProbes = orgData.getProbes();
+                            for (int i = 0; i <timestampProbes.length; i++) {
+                                timestampProbes[i] = timestampProbes[i] | orgProbes[i];
+                            }
                         }
                     }
                 }
             }
 
             for (String delete : deletedClass) {
-                timestampExecutionDataCollection.stream().filter(e -> e.getName().replace(File.separator, ".").equals(delete)).findFirst().ifPresent(timestampExecutionDataCollection::remove);
+                timestampExecutionDataCollection.stream().filter(e -> e.getName().replace("/", ".").equals(delete)).findFirst().ifPresent(timestampExecutionDataCollection::remove);
             }
 
             timestampExecFileLoader.save(new File(timestampMergedFilePath), true);
@@ -336,7 +458,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
         /*
          * 5. generate report to root
          */
-        String reportDirPath = root + File.separator + baseDir + File.separator + this.appName + File.separator + "report";
+        String reportDirPath = root + File.separator + baseDir + File.separator + this.appName + File.separator + this.curBranch + File.separator + "report";
         deleteFolder(new File(reportDirPath));
         ExecFileLoader reportLoader = new ExecFileLoader();
         reportLoader.load(new File(orgExecFilePath));
@@ -344,6 +466,201 @@ public class LocalApiServer implements HttpHandler, Runnable {
         addClassFiles(orgClassDirPath, reportClassFiles);
         IBundleCoverage bundle = analyze(this.appName, reportLoader.getExecutionDataStore(), reportClassFiles);
         writeReports(bundle, reportLoader, new File(reportDirPath));
+    }
+
+    private void getDiffCode(String branchSourceDir, String branchFilePath, String masterPath, List<ClassInfo> diffClassInfos, Map<String, String> packageMapping) {
+        File file = new File(branchFilePath);
+        if (!file.isDirectory()) {
+            String javaFileName = file.getName();
+            String javaFilePath = file.getAbsolutePath();
+            String classFileName = javaFilePath.replace(branchSourceDir, "").substring(1).replace(File.separator, ".");
+            if (!javaFileName.endsWith(".java") || !javaFilePath.contains("com" + File.separator + "intramirror")) {
+                return;
+            }
+            File destDir = new File(masterPath);
+            List<JavaMethodInfo> branchMethodInfos = parseJavaFile(branchFilePath);
+            if (!destDir.exists()) {
+                ClassInfo branchClassInfo = toClassInfo(packageMapping, classFileName, branchMethodInfos, null);
+                if (branchClassInfo != null) {
+                    diffClassInfos.add(branchClassInfo);
+                }
+                return;
+            }
+            String masterJavaPath = masterPath + File.separator + javaFileName;
+            File masterJavaFile = new File(masterJavaPath);
+            ClassInfo classInfo;
+            if (!masterJavaFile.exists()) {
+                classInfo = toClassInfo(packageMapping, classFileName, branchMethodInfos, null);
+            } else {
+                classInfo = toClassInfo(packageMapping, classFileName, branchMethodInfos, parseJavaFile(masterJavaPath));
+            }
+            if (classInfo != null) {
+                diffClassInfos.add(classInfo);
+            }
+            return;
+        }
+        for (File child : Objects.requireNonNull(file.listFiles())) {
+            String newTimestampJavaPath = masterPath;
+            if (child.isDirectory()) {
+                newTimestampJavaPath = masterPath + File.separator + child.getName();
+            }
+            getDiffCode(branchSourceDir, child.getAbsolutePath(), newTimestampJavaPath, diffClassInfos, packageMapping);
+        }
+    }
+
+    private ClassInfo toClassInfo(Map<String, String> packageMapping, String classFileName, List<JavaMethodInfo> branchMethodInfos, List<JavaMethodInfo> masterMethodInfos) {
+        String className = classFileName.substring(0, classFileName.lastIndexOf("."));
+        String packageName = packageMapping.get(className);
+        className = className.replace(".", "/");
+        if (masterMethodInfos == null) {
+            List<MethodInfo> methodInfos = branchMethodInfos.stream().map(javaMethodInfo -> MethodInfo.builder().diffType(DiffResultTypeEnum.ADD).md5(javaMethodInfo.getMd5()).methodName(javaMethodInfo.getMethodName()).methodUri(javaMethodInfo.getMethodUri()).params(javaMethodInfo.getParams()).build()).collect(Collectors.toList());
+            if (methodInfos.isEmpty()) {
+                return null;
+            }
+            return ClassInfo.builder().className(className).packageName(packageName).diffType(DiffResultTypeEnum.ADD).methodInfos(methodInfos).build();
+        }
+        Set<String> sameMethod = new HashSet<>();
+        for (JavaMethodInfo branchMethodInfo : branchMethodInfos) {
+            for (JavaMethodInfo masterMethodInfo : masterMethodInfos) {
+                if (branchMethodInfo.toString().equals(masterMethodInfo.toString())) {
+                    sameMethod.add(branchMethodInfo.toString());
+                }
+            }
+        }
+        List<MethodInfo> diffMethods = branchMethodInfos.stream().filter(e -> !sameMethod.contains(e.toString())).map(e -> MethodInfo.builder().methodName(e.getMethodName()).params(e.getParams()).methodUri(e.getMethodUri()).md5(e.getMd5()).diffType(DiffResultTypeEnum.MODIFY).build()).collect(Collectors.toList());
+        if (diffMethods.isEmpty()) {
+            return null;
+        }
+        return ClassInfo.builder().className(className).packageName(packageName).diffType(DiffResultTypeEnum.MODIFY).methodInfos(diffMethods).build();
+    }
+
+    private void copySourceFile(String filePath, String timestampJavaPath, String packageName, Map<String, String> packageMapping) throws IOException {
+        File file = new File(filePath);
+        if (!file.isDirectory()) {
+            String javaFileName = file.getName();
+            String classFilePath = file.getAbsolutePath();
+            if (!javaFileName.endsWith(".java") || !classFilePath.contains("com" + File.separator + "intramirror")) {
+                return;
+            }
+            File destDir = new File(timestampJavaPath);
+            if (!destDir.exists()) {
+                destDir.mkdirs();
+            }
+            String className = classFilePath.substring(classFilePath.lastIndexOf(SRC_FLAG) + SRC_FLAG.length() + 1).replace(File.separator, ".");
+            className = className.substring(0, className.lastIndexOf("."));
+            if (packageName != null && packageMapping != null) {
+                packageMapping.put(className, packageName);
+            }
+            Files.copy(Paths.get(classFilePath), Paths.get(timestampJavaPath + File.separator + javaFileName));
+            return;
+        }
+        for (File child : Objects.requireNonNull(file.listFiles())) {
+            String newTimestampJavaPath = timestampJavaPath;
+            if (child.isDirectory()) {
+                newTimestampJavaPath = timestampJavaPath + File.separator + child.getName();
+            }
+            copySourceFile(child.getAbsolutePath(), newTimestampJavaPath, packageName, packageMapping);
+        }
+    }
+
+    private void resetProbe(String className, ExecutionData orgData, String orgClassPath, ClassCoverageImpl orgClassCoverage, ExecutionData timestampData, String timestampClassPath, ClassCoverageImpl timestampClassCoverage, ExecutionDataStore timestampExecutionDataStore) {
+        List<JavaMethodInfo> sameMethods = getSameMethods(orgClassPath, timestampClassPath);
+        List<MethodProbesInfo> orgMethodProbesInfos = orgClassCoverage.getMethodProbesInfos();
+        for (MethodProbesInfo orgMethodProbesInfo : orgMethodProbesInfos) {
+            String name = orgMethodProbesInfo.getMethodName();
+            String desc = orgMethodProbesInfo.getDesc();
+            if(sameMethods.isEmpty() || !containInSameMethodInfo(sameMethods, name, desc)) {
+               continue;
+            }
+            MethodProbesInfo timestampMethodProbesInfo = getTimestampMethodInfo(timestampClassCoverage.getMethodProbesInfos(), orgMethodProbesInfo);
+            if (timestampMethodProbesInfo == null) {
+                continue;
+            }
+            int length = timestampMethodProbesInfo.getEndIndex() - timestampMethodProbesInfo.getStartIndex() + 1;
+            int newStartIndex = timestampMethodProbesInfo.getStartIndex();
+            int oldStartIndex = orgMethodProbesInfo.getStartIndex();
+            boolean[] newProbes = timestampData.getProbes();
+            boolean[] oldProbes = orgData.getProbes();
+
+            if (Objects.isNull(oldProbes)) {
+                // ignore
+                continue;
+            } else if (Objects.isNull(newProbes)
+                    && !Objects.isNull(oldProbes)) {
+                // new exec modify class not init
+                // get probes size
+                int newProbesSize = 0;
+                for (MethodProbesInfo info : timestampClassCoverage.getMethodProbesInfos()) {
+                    int len = info.getEndIndex() - info.getStartIndex() + 1;
+                    newProbesSize += len;
+                }
+                newProbes = new boolean[newProbesSize];
+                ExecutionData data = new ExecutionData(timestampClassCoverage.getId(), className, newProbes);
+                timestampExecutionDataStore.put(data);
+            }
+            // 这里应该还要加上set数据的合并
+            while (length-- > 0) {
+                if (newStartIndex < newProbes.length && oldStartIndex < oldProbes.length) {
+                    newProbes[newStartIndex] = newProbes[newStartIndex] | oldProbes[oldStartIndex];
+                    newStartIndex++;
+                    oldStartIndex++;
+                }
+            }
+        }
+    }
+
+    private MethodProbesInfo getTimestampMethodInfo(List<MethodProbesInfo> methodProbesInfos, MethodProbesInfo orgMethodProbesInfo) {
+        for (MethodProbesInfo timestampMethodProbesInfo : methodProbesInfos) {
+            if (timestampMethodProbesInfo.getMethodName().equals(orgMethodProbesInfo.getMethodName()) &&
+                    timestampMethodProbesInfo.getDesc().equals(orgMethodProbesInfo.getDesc()) &&
+                            timestampMethodProbesInfo.getMethodUri().equals(orgMethodProbesInfo.getMethodUri())) {
+                return timestampMethodProbesInfo;
+            }
+        }
+        return null;
+    }
+
+    private boolean containInSameMethodInfo(List<JavaMethodInfo> diffMethods, String name, String desc) {
+        for (JavaMethodInfo methodInfo : diffMethods) {
+            String params = methodInfo.getParams();
+            if (methodInfo.getMethodName().equals(name) && MethodUriAdapter.checkParamsIn(params, desc)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<JavaMethodInfo> getSameMethods(String orgJavaPath, String timestampJavaPath) {
+        List<JavaMethodInfo> orgMethodInfos = parseJavaFile(orgJavaPath);
+        List<JavaMethodInfo> timestampMethodInfos = parseJavaFile(timestampJavaPath);
+        List<JavaMethodInfo> sameMethodInfos = new LinkedList<>();
+        for (JavaMethodInfo orgMethodInfo : orgMethodInfos) {
+            for (JavaMethodInfo timestampMethodInfo : timestampMethodInfos) {
+                if (orgMethodInfo.getMethodName().equals(timestampMethodInfo.getMethodName()) &&
+                orgMethodInfo.getMd5().equals(timestampMethodInfo.getMd5()) &&
+                        orgMethodInfo.getParams().equals(timestampMethodInfo.getParams())
+                ) {
+                    sameMethodInfos.add(orgMethodInfo);
+                }
+            }
+        }
+        return sameMethodInfos;
+    }
+
+    @SneakyThrows
+    private List<JavaMethodInfo> parseJavaFile(String path) {
+        List<JavaMethodInfo> list = new ArrayList<>();
+        try (FileInputStream in = new FileInputStream(path)){
+            JavaParser javaParser = new JavaParser();
+            CompilationUnit cu = javaParser.parse(in).getResult().orElseThrow(() -> new RuntimeException("parse java error"));
+            final List<?> types = cu.getTypes();
+            boolean isInterface = types.stream().filter(t -> t instanceof ClassOrInterfaceDeclaration).anyMatch(t -> ((ClassOrInterfaceDeclaration) t).isInterface());
+            if (isInterface) {
+                return list;
+            }
+            cu.accept(new MethodVisitor(cu.getPackageDeclaration().orElse(null), cu.getImports()), list);
+            return list;
+        }
     }
 
     private void writeReports(final IBundleCoverage bundle, final ExecFileLoader loader, File html)
@@ -364,7 +681,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
     }
 
     private IReportVisitor createReportVisitor(File html) throws IOException {
-        final List<IReportVisitor> visitors = new ArrayList<IReportVisitor>();
+        final List<IReportVisitor> visitors = new ArrayList<>();
         final HTMLFormatter formatter = new HTMLFormatter();
             visitors.add(
                     formatter.createVisitor(new FileMultiReportOutput(html)));
@@ -396,8 +713,11 @@ public class LocalApiServer implements HttpHandler, Runnable {
     private void addClassFiles(String classDir, List<File> classFileList) {
         File classFile = new File(classDir);
         if (classFile.isDirectory()) {
-            for (File file : classFile.listFiles()) {
-                addClassFiles(file.getAbsolutePath(), classFileList);
+            File[] listFiles = classFile.listFiles();
+            if (listFiles != null) {
+                for (File file : listFiles) {
+                    addClassFiles(file.getAbsolutePath(), classFileList);
+                }
             }
             return;
         }
@@ -451,17 +771,22 @@ public class LocalApiServer implements HttpHandler, Runnable {
         try {
             Path file = Paths.get(path);
             byte[] fileBytes = Files.readAllBytes(file);
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            md.update(fileBytes);
-            byte[] hashBytes = md.digest();
-            StringBuilder sb = new StringBuilder();
-            for (byte b : hashBytes) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
+            return sha(fileBytes);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    @SneakyThrows
+    private static String sha(byte[] bytes) {
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        md.update(bytes);
+        byte[] hashBytes = md.digest();
+        StringBuilder sb = new StringBuilder();
+        for (byte b : hashBytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
     }
 
     public int getPort() {
@@ -469,31 +794,92 @@ public class LocalApiServer implements HttpHandler, Runnable {
     }
 
     @Override
-    public String toString() {
-        return "LocalApiServer{" +
-                "root='" + root + '\'' +
-                ", port=" + port +
-                ", filePort=" + filePort +
-                ", dumpPort=" + dumpPort +
-                ", workspace='" + workspace + '\'' +
-                ", sourcePath='" + sourcePath + '\'' +
-                ", classPath='" + classPath + '\'' +
-                ", timestamp=" + timestamp +
-                ", baseDir='" + baseDir + '\'' +
-                ", classHashFileName='" + classHashFileName + '\'' +
-                ", appName='" + appName + '\'' +
-                '}';
-    }
-
-    @SneakyThrows
-    @Override
     public void run() {
         while (true) {
-            Thread.sleep(refreshInterval);
-            if (this.appName == null || !refresh) {
-                return;
+            try {
+                Thread.sleep(refreshInterval);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
             }
-            exec(null);
+            try {
+                if (this.appName == null || !refresh) {
+                    return;
+                }
+                exec(null);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         }
+    }
+
+    private static class MethodVisitor extends VoidVisitorAdapter<List<JavaMethodInfo>> {
+
+        private final Map<String, String> importClassNames;
+        private final String packageName;
+
+        private MethodVisitor(PackageDeclaration packageDeclaration, NodeList<ImportDeclaration> imports) {
+            this.packageName = packageDeclaration == null ? null : packageDeclaration.getNameAsString();
+            importClassNames = new HashMap<>();
+            if (imports != null) {
+                imports.forEach(importDeclaration -> {
+                    String name = importDeclaration.getNameAsString();
+                    String[] arr = name.split("\\.");
+                    String simpleName = arr.length == 1 ? arr[0] : arr[arr.length - 1];
+                    importClassNames.put(simpleName, name);
+                });
+            }
+        }
+
+        @Override
+        public void visit(ConstructorDeclaration n, List<JavaMethodInfo> list) {
+            addMethod(n, list, "<init>");
+            super.visit(n, list);
+        }
+
+        @SneakyThrows
+        @Override
+        public void visit(MethodDeclaration n, List<JavaMethodInfo> list) {
+            addMethod(n, list, n.getNameAsString());
+            super.visit(n, list);
+        }
+
+        private void addMethod(CallableDeclaration n, List<JavaMethodInfo> list, String methodName) {
+            n.removeComment();
+            String md5 = SecureUtil.md5(n.toString());
+            StringBuilder params = new StringBuilder();
+            NodeList<Parameter> parameters = n.getParameters();
+            if(!(parameters == null || parameters.isEmpty())){
+                for (Parameter parameter : parameters) {
+                    Type paramType = parameter.getType();
+                    String param = paramType.toString();
+                    params.append(param.replaceAll(" ", ""));
+                    params.append(";");
+                }
+            }
+            JavaMethodInfo methodInfo = JavaMethodInfo.builder()
+                    .md5(md5)
+                    .methodName(methodName)
+                    .params(params.toString())
+                    .build();
+            list.add(methodInfo);
+        }
+
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @EqualsAndHashCode
+    @ToString
+    public static class JavaMethodInfo implements Serializable {
+        private static final long serialVersionUID = 1L;
+
+        private String methodName;
+        private String md5;
+        private String methodUri;
+        private String params;
+
+
     }
 }
