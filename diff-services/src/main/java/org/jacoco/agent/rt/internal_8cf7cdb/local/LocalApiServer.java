@@ -47,7 +47,7 @@ import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
 @ToString
-public class LocalApiServer implements HttpHandler, Runnable {
+public class LocalApiServer extends Thread implements HttpHandler {
 
     private static final String BASE_PACKAGE = "com" + File.separator + "test"; //todo
 
@@ -83,8 +83,6 @@ public class LocalApiServer implements HttpHandler, Runnable {
     private final String mergeLevel; // class / method
 
     private final String curBranch;
-
-    private transient Thread refreshThread;
 
     private static volatile boolean running = false;
 
@@ -137,6 +135,10 @@ public class LocalApiServer implements HttpHandler, Runnable {
         }
 
         LocalApiServer localApiServer = new LocalApiServer(root, port, filePort, dumpPort, sourcePath, classPath, workspace, app, refresh, refreshInterval, mergeLevel, curBranch);
+        localApiServer.setName("CoverageRefreshThread");
+        if (refresh) {
+            localApiServer.start();
+        }
         HttpServer server;
         try {
             System.out.println("coverage local port: " + localApiServer.port);
@@ -240,11 +242,6 @@ public class LocalApiServer implements HttpHandler, Runnable {
                 if (interval != null) {
                     this.refreshInterval = Long.valueOf(interval);
                 }
-                if (this.refresh && this.refreshThread == null) {
-                    this.refreshThread = new Thread(this);
-                    this.refreshThread.setName("CoverageRefreshThread");
-                    this.refreshThread.start();
-                }
                 httpExchange.sendResponseHeaders(200, String.valueOf(this.refresh).getBytes().length);
                 httpExchange.getResponseBody().write(String.valueOf(this.refresh).getBytes(StandardCharsets.UTF_8));
                 httpExchange.getResponseBody().close();
@@ -302,7 +299,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
         return queryMap;
     }
 
-    private void exec(String sign) throws Exception {
+    private synchronized void exec(String sign) throws Exception {
 
         /*
          * 1. dump data to timestamp
@@ -814,8 +811,10 @@ public class LocalApiServer implements HttpHandler, Runnable {
         return port;
     }
 
+    @SneakyThrows
     @Override
     public void run() {
+        Thread.sleep(60 * 1000);
         while (true) {
             try {
                 Thread.sleep(refreshInterval);
@@ -824,7 +823,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
             }
             try {
                 if (this.appName == null || !refresh) {
-                    return;
+                    continue;
                 }
                 exec(null);
             } catch (Exception e) {
