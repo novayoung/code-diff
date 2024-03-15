@@ -91,6 +91,10 @@ public class LocalApiServer extends Thread implements HttpHandler {
 
     private String lastExecFileMD5 = null;
 
+    private boolean isMasterCheckout = false;
+
+    private boolean isMasterCopied = false;
+
     LocalApiServer(String root, int port, int filePort, int dumpPort, String sourcePath, String classPath, String workspace, String appName, Boolean refresh, Long refreshInterval, String mergeLevel, String curBranch) {
         this.root = root;
         this.port = port;
@@ -393,35 +397,43 @@ public class LocalApiServer extends Thread implements HttpHandler {
         List<ClassInfo> diffClassInfos = new LinkedList<>();
         if (!"master".equals(this.curBranch)) {
             String masterCloneSourceDir = root + File.separator + baseDir + File.separator + this.appName +File.separator + "master_clone";
-            File masterSourceFile = new File(masterCloneSourceDir);
-            String gitUrl = execCmd(this.workspace,"git config --get remote.origin.url");
-            String masterCloneSourceGitDir;
-            if (masterSourceFile.exists()) {
-                masterCloneSourceGitDir = Objects.requireNonNull(masterSourceFile.listFiles())[0].getAbsolutePath();
-                execCmd(masterCloneSourceGitDir, "git fetch origin");
-                execCmd(masterCloneSourceGitDir, "git pull origin master");
-            } else {
-                masterSourceFile.mkdirs();
-                execCmd(masterCloneSourceDir, "git clone " + gitUrl);
-                masterCloneSourceGitDir = Objects.requireNonNull(masterSourceFile.listFiles())[0].getAbsolutePath();
-                execCmd(masterCloneSourceGitDir, "git fetch origin");
-            }
-            String commonCommitId = getCommonCommitId(this.workspace, masterCloneSourceGitDir);
-            if (commonCommitId != null && !commonCommitId.trim().equals("")) {
-                // checkout master by commitId
-                execCmd(masterCloneSourceGitDir, "git checkout " + commonCommitId);
+            if (!isMasterCheckout) {    // only once
+                File masterSourceFile = new File(masterCloneSourceDir);
+                String gitUrl = execCmd(this.workspace,"git config --get remote.origin.url");
+                String masterCloneSourceGitDir;
+                if (masterSourceFile.exists()) {
+                    masterCloneSourceGitDir = Objects.requireNonNull(masterSourceFile.listFiles())[0].getAbsolutePath();
+                    execCmd(masterCloneSourceGitDir, "git fetch origin");
+                    execCmd(masterCloneSourceGitDir, "git pull origin master");
+                } else {
+                    masterSourceFile.mkdirs();
+                    execCmd(masterCloneSourceDir, "git clone " + gitUrl);
+                    masterCloneSourceGitDir = Objects.requireNonNull(masterSourceFile.listFiles())[0].getAbsolutePath();
+                    execCmd(masterCloneSourceGitDir, "git fetch origin");
+                }
+                String commonCommitId = getCommonCommitId(this.workspace, masterCloneSourceGitDir);
+                if (commonCommitId != null && !commonCommitId.trim().equals("")) {
+                    // checkout master by commitId
+                    execCmd(masterCloneSourceGitDir, "git checkout " + commonCommitId);
+                }
+                isMasterCheckout = true;
             }
 
-            List<String> masterSourcePaths = new LinkedList<>();
-            guessPath(masterCloneSourceDir, "src" + File.separator + "main" + File.separator + "java", masterSourcePaths);
             String destMasterSourceDir = root + File.separator + baseDir + File.separator + this.appName +File.separator + "master_code";
-            File destMasterSourceDirFile = new File(destMasterSourceDir);
-            if (destMasterSourceDirFile.exists()) {
-                deleteFolder(destMasterSourceDirFile);
+
+            if (!isMasterCopied) {   // only once
+                File destMasterSourceDirFile = new File(destMasterSourceDir);
+                if (destMasterSourceDirFile.exists()) {
+                    deleteFolder(destMasterSourceDirFile);
+                }
+                List<String> masterSourcePaths = new LinkedList<>();
+                guessPath(masterCloneSourceDir, "src" + File.separator + "main" + File.separator + "java", masterSourcePaths);
+                for (String masterSourcePath : masterSourcePaths) {
+                    copySourceFile(masterSourcePath.trim(), destMasterSourceDir, null, null);
+                }
+                isMasterCopied = true;
             }
-            for (String masterSourcePath : masterSourcePaths) {
-                copySourceFile(masterSourcePath.trim(), destMasterSourceDir, null, null);
-            }
+
             getDiffCode(timestampSourceDirPath, timestampSourceDirPath, destMasterSourceDir, diffClassInfos, packageMapping);
         }
         if (!diffClassInfos.isEmpty()) {
