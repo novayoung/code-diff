@@ -42,8 +42,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
+import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.stream.Collectors;
 
 @ToString
@@ -86,6 +89,8 @@ public class LocalApiServer extends Thread implements HttpHandler {
 
     private static volatile boolean running = false;
 
+    private String lastExecFileMD5 = null;
+
     LocalApiServer(String root, int port, int filePort, int dumpPort, String sourcePath, String classPath, String workspace, String appName, Boolean refresh, Long refreshInterval, String mergeLevel, String curBranch) {
         this.root = root;
         this.port = port;
@@ -119,6 +124,7 @@ public class LocalApiServer extends Thread implements HttpHandler {
         String mergeLevel = System.getProperty("coverage.local.mergeLevel", "method");
         String curBranch = execCmd(workspace, "git rev-parse --abbrev-ref HEAD");
         System.setProperty("eureka.instance.metadata-map.coverageLocalBranch", curBranch);
+        System.setProperty("eureka.instance.metadata-map.coverageLocalRefresh", String.valueOf(refresh));
 
         if (sourcePath.equals("")) {
             List<String> sourcePaths = new LinkedList<>();
@@ -136,9 +142,7 @@ public class LocalApiServer extends Thread implements HttpHandler {
 
         LocalApiServer localApiServer = new LocalApiServer(root, port, filePort, dumpPort, sourcePath, classPath, workspace, app, refresh, refreshInterval, mergeLevel, curBranch);
         localApiServer.setName("CoverageRefreshThread");
-        if (refresh) {
-            localApiServer.start();
-        }
+        localApiServer.start();
         HttpServer server;
         try {
             System.out.println("coverage local port: " + localApiServer.port);
@@ -150,8 +154,14 @@ public class LocalApiServer extends Thread implements HttpHandler {
             e.printStackTrace();
             throw new RuntimeException(e);
         }
-        server.setExecutor(Executors.newCachedThreadPool());
 
+        ThreadFactory threadFactory = runnable -> {
+            Thread thread = Executors.defaultThreadFactory().newThread(runnable);
+            thread.setName("CoverageWorkerThread-" + thread.getId());
+            return thread;
+        };
+        ExecutorService executor = Executors.newFixedThreadPool(2, threadFactory);
+        server.setExecutor(executor);
         server.createContext("/", localApiServer);
         server.start();
         return localApiServer;
@@ -166,13 +176,22 @@ public class LocalApiServer extends Thread implements HttpHandler {
         } else {
             process = Runtime.getRuntime().exec(new String[]{"sh", "-c", "cd " + workspace + " | " + cmd});
         }
-        BufferedReader stdOutput = new BufferedReader(new InputStreamReader(process.getInputStream()));
-        StringBuilder stringBuilder = new StringBuilder();
-        String s;
-        while ((s = stdOutput.readLine()) != null) {
-            stringBuilder.append(s);
+        String success = readInput(process.getInputStream());
+        String error = readInput(process.getErrorStream());
+        if (!"".equals(error)) {
+            System.err.println(error);
         }
-        return stringBuilder.toString();
+        return success;
+    }
+
+    private static String readInput(InputStream inputStream) throws IOException {
+        BufferedReader stdOutput = new BufferedReader(new InputStreamReader(inputStream));
+        String s;
+        List<String> list = new LinkedList<>();
+        while ((s = stdOutput.readLine()) != null) {
+            list.add(s);
+        }
+        return String.join("\n", list);
     }
 
     private static void guessPath(String workspace, String endWith, List<String> paths) {
@@ -183,26 +202,32 @@ public class LocalApiServer extends Thread implements HttpHandler {
         if (file.getAbsolutePath().endsWith(endWith)) {
             paths.add(file.getAbsolutePath());
         }
-        for (File listFile : file.listFiles()) {
-            if (!listFile.isDirectory()) {
-                continue;
+        File[] files = file.listFiles();
+        if (files != null) {
+            for (File listFile : files) {
+                if (!listFile.isDirectory()) {
+                    continue;
+                }
+                guessPath(listFile.getAbsolutePath(), endWith, paths);
             }
-            guessPath(listFile.getAbsolutePath(), endWith, paths);
         }
     }
 
+    @SneakyThrows
     @Override
     public synchronized void handle(HttpExchange httpExchange) {
         String path = httpExchange.getRequestURI().getPath();
         if ("/report".equals(path)) {
             try {
                 doReport(httpExchange);
-                httpExchange.sendResponseHeaders(200, "".getBytes().length);
+                httpExchange.sendResponseHeaders(200, 0);
                 httpExchange.getResponseBody().write("".getBytes(StandardCharsets.UTF_8));
                 httpExchange.getResponseBody().close();
             } catch (Exception e) {
                 e.printStackTrace();
-                throw new RuntimeException(e);
+                httpExchange.sendResponseHeaders(500, 0);
+                httpExchange.getResponseBody().write("".getBytes(StandardCharsets.UTF_8));
+                httpExchange.getResponseBody().close();
             }
         }
         if ("/config".equals(path)) {
@@ -228,7 +253,9 @@ public class LocalApiServer extends Thread implements HttpHandler {
                 httpExchange.getResponseBody().close();
             } catch (Exception e) {
                 e.printStackTrace();
-                throw new RuntimeException(e);
+                httpExchange.sendResponseHeaders(500, this.toString().getBytes().length);
+                httpExchange.getResponseBody().write(this.toString().getBytes(StandardCharsets.UTF_8));
+                httpExchange.getResponseBody().close();
             }
         }
         if ("/auto".equals(path)) {
@@ -255,23 +282,29 @@ public class LocalApiServer extends Thread implements HttpHandler {
                 Map<String, String> queryMap = getQueryMap(httpExchange);
                 String app = queryMap.get("app");
                 String branch = queryMap.get("branch");
-                String reportZipPath = root + File.separator + baseDir + File.separator + app + File.separator + branch + File.separator + "exportReport.zip";
-                if (FileUtil.exist(reportZipPath)) {
-                    FileUtil.del(reportZipPath);
-                }
-                String reportDirPath = root + File.separator + baseDir + File.separator + app + File.separator + branch + File.separator + "report";
-                ZipUtil.zip(reportDirPath, reportZipPath);
+                compressZip(app, branch);
                 httpExchange.sendResponseHeaders(200, 0);
                 httpExchange.getResponseBody().write("".getBytes());
                 httpExchange.getResponseBody().close();
             } catch (Exception e) {
                 e.printStackTrace();
-                throw new RuntimeException(e);
+                httpExchange.sendResponseHeaders(500, 0);
+                httpExchange.getResponseBody().write("".getBytes(StandardCharsets.UTF_8));
+                httpExchange.getResponseBody().close();
             }
         }
     }
 
-    private void clear() {
+    private synchronized void compressZip(String app, String branch) {
+        String reportZipPath = root + File.separator + baseDir + File.separator + app + File.separator + branch + File.separator + "exportReport.zip";
+        if (FileUtil.exist(reportZipPath)) {
+            FileUtil.del(reportZipPath);
+        }
+        String reportDirPath = root + File.separator + baseDir + File.separator + app + File.separator + branch + File.separator + "report";
+        ZipUtil.zip(reportDirPath, reportZipPath);
+    }
+
+    private synchronized void clear() {
         deleteFolder(new File(root + File.separator + baseDir + File.separator + this.appName + File.separator + this.curBranch));
     }
 
@@ -319,6 +352,13 @@ public class LocalApiServer extends Thread implements HttpHandler {
 
         if (!timestampDirFile.exists()) {
             timestampDirFile.mkdirs();
+            Files.deleteIfExists(Paths.get(timestampExecFilePath));
+            JacocoApi.execute("dump", "--destfile", timestampExecFilePath, "--address", this.dumpHost, "--port", this.dumpPort + "");
+            String execFileMD5 = sha(FileUtil.readBytes(timestampExecFilePath));
+            if (lastExecFileMD5 != null && lastExecFileMD5.equals(execFileMD5)) {
+                return;         // no change
+            }
+            lastExecFileMD5 = execFileMD5;
             /*
              * 2.1 Generate class file hash to timestamp
              */
@@ -342,6 +382,9 @@ public class LocalApiServer extends Thread implements HttpHandler {
                 String packageName = packagePath.substring(packagePath.lastIndexOf(File.separator) + 1);
                 copySourceFile(sourceDir, timestampSourceDirPath, packageName, packageMapping);
             }
+        } else {
+            Files.deleteIfExists(Paths.get(timestampExecFilePath));
+            JacocoApi.execute("dump", "--destfile", timestampExecFilePath, "--address", this.dumpHost, "--port", this.dumpPort + "");
         }
 
         /*
@@ -352,12 +395,23 @@ public class LocalApiServer extends Thread implements HttpHandler {
             String masterCloneSourceDir = root + File.separator + baseDir + File.separator + this.appName +File.separator + "master_clone";
             File masterSourceFile = new File(masterCloneSourceDir);
             String gitUrl = execCmd(this.workspace,"git config --get remote.origin.url");
+            String masterCloneSourceGitDir;
             if (masterSourceFile.exists()) {
-                execCmd(masterCloneSourceDir, "git pull");
+                masterCloneSourceGitDir = Objects.requireNonNull(masterSourceFile.listFiles())[0].getAbsolutePath();
+                execCmd(masterCloneSourceGitDir, "git fetch origin");
+                execCmd(masterCloneSourceGitDir, "git pull origin master");
             } else {
                 masterSourceFile.mkdirs();
                 execCmd(masterCloneSourceDir, "git clone " + gitUrl);
+                masterCloneSourceGitDir = Objects.requireNonNull(masterSourceFile.listFiles())[0].getAbsolutePath();
+                execCmd(masterCloneSourceGitDir, "git fetch origin");
             }
+            String commonCommitId = getCommonCommitId(this.workspace, masterCloneSourceGitDir);
+            if (commonCommitId != null && !commonCommitId.trim().equals("")) {
+                // checkout master by commitId
+                execCmd(masterCloneSourceGitDir, "git checkout " + commonCommitId);
+            }
+
             List<String> masterSourcePaths = new LinkedList<>();
             guessPath(masterCloneSourceDir, "src" + File.separator + "main" + File.separator + "java", masterSourcePaths);
             String destMasterSourceDir = root + File.separator + baseDir + File.separator + this.appName +File.separator + "master_code";
@@ -375,8 +429,6 @@ public class LocalApiServer extends Thread implements HttpHandler {
         }
 
         addClassFiles(timestampClassDirPath, timestampClassFileList);
-        Files.deleteIfExists(Paths.get(timestampExecFilePath));
-        JacocoApi.execute("dump", "--destfile", timestampExecFilePath, "--address", this.dumpHost, "--port", this.dumpPort + "");
 
         /*
          * 3. merge merged data to timestamp
@@ -486,6 +538,19 @@ public class LocalApiServer extends Thread implements HttpHandler {
         writeReports(bundle, reportLoader, new File(reportDirPath));
     }
 
+    private String getCommonCommitId(String workspace, String masterCloneSourceDir) {
+        String[] branchCommitIds = execCmd(this.workspace, "git log --pretty=format:\"%H\" -n 100").split("\n");
+        String[] masterCommitIds = execCmd(masterCloneSourceDir, "git log origin/master --pretty=format:\"%H\" -n 100").split("\n");
+        for (String branchCommitId :  branchCommitIds) {
+            for (String masterCommitId : masterCommitIds) {
+                if (branchCommitId.equals(masterCommitId) && !masterCommitId.equals(masterCommitIds[0])) {
+                    return branchCommitId;
+                }
+            }
+        }
+        return null;
+    }
+
     private void getDiffCode(String branchSourceDir, String branchFilePath, String masterPath, List<ClassInfo> diffClassInfos, Map<String, String> packageMapping) {
         File file = new File(branchFilePath);
         if (!file.isDirectory()) {
@@ -495,6 +560,16 @@ public class LocalApiServer extends Thread implements HttpHandler {
             if (!javaFileName.endsWith(".java") || !javaFilePath.contains("com" + File.separator + "intramirror")) {
                 return;
             }
+            String masterJavaPath = masterPath + File.separator + javaFileName;
+            String branchFileMD5 = sha(FileUtil.readBytes(branchFilePath));
+            File masterJavaFile = new File(masterJavaPath);
+            if (masterJavaFile.exists()) {
+                String masterFileMD5 = sha(FileUtil.readBytes(masterJavaPath));
+                if (branchFileMD5.equals(masterFileMD5)) {
+                    return;
+                }
+            }
+
             File destDir = new File(masterPath);
             List<JavaMethodInfo> branchMethodInfos = parseJavaFile(branchFilePath);
             if (!destDir.exists()) {
@@ -504,8 +579,7 @@ public class LocalApiServer extends Thread implements HttpHandler {
                 }
                 return;
             }
-            String masterJavaPath = masterPath + File.separator + javaFileName;
-            File masterJavaFile = new File(masterJavaPath);
+
             ClassInfo classInfo;
             if (!masterJavaFile.exists()) {
                 classInfo = toClassInfo(packageMapping, classFileName, branchMethodInfos, null);
@@ -814,7 +888,7 @@ public class LocalApiServer extends Thread implements HttpHandler {
     @SneakyThrows
     @Override
     public void run() {
-        Thread.sleep(60 * 1000);
+        Thread.sleep(30 * 1000);
         while (true) {
             try {
                 Thread.sleep(refreshInterval);
@@ -826,6 +900,7 @@ public class LocalApiServer extends Thread implements HttpHandler {
                     continue;
                 }
                 exec(null);
+                System.out.println(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.sss").format(new Date()) + ": auto refresh coverage report");
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -899,7 +974,5 @@ public class LocalApiServer extends Thread implements HttpHandler {
         private String md5;
         private String methodUri;
         private String params;
-
-
     }
 }
