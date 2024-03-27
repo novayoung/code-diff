@@ -37,6 +37,10 @@ import org.w3c.dom.NodeList;
 
 import javax.annotation.Resource;
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -329,12 +333,41 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
             //todo clear history ?
             CoverageReport report = selectUsedByProjectIdAndNewBranch(projectId.intValue(), params.getFeatureBranch());
             String reportUrl = reportDomain + reportRelativePath(report.getReportUri()) + "/index.html";
+            String reportUrlSnapshot = reportDomain + reportRelativePath(copySnapshot(report.getReportUri())) + "/index.html";
             Map<String, Object> data = new HashMap<>();
             data.put("reportUrl", reportUrl);
             data.put("instructionCoverageRate", parseCoverage(reportUrl));
+            data.put("reportUrlSnapshot", reportUrlSnapshot);
             baseResult.setData(data);
         }
         return baseResult;
+    }
+
+    private synchronized String copySnapshot(String reportDir) {
+        String snapShot = "s" + File.separator + new SimpleDateFormat("yyMMddHHmmss").format(new Date());
+        String snapShotDirPath = FileConst.DIFF_ROOT_PATH + File.separator + snapShot + reportDir.substring(FileConst.DIFF_ROOT_PATH.length());
+        copyDirectory(reportDir, snapShotDirPath);
+        return snapShotDirPath;
+    }
+
+    public static void copyDirectory(String sourceDirPath, String targetDirPath) {
+        File sourceDir = new File(sourceDirPath);
+        File targetDir = new File(targetDirPath);
+        if (!targetDir.exists()) {
+            targetDir.mkdirs();
+        }
+        for (File sourceFile : Objects.requireNonNull(sourceDir.listFiles())) {
+            File targetFile = new File(targetDir.getAbsolutePath() + File.separator + sourceFile.getName());
+            if (sourceFile.isDirectory()) {
+                copyDirectory(sourceFile.getAbsolutePath(), targetFile.getAbsolutePath());
+            } else {
+                try {
+                    Files.copy(sourceFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException e) {
+                    System.err.println("复制文件[" + sourceFile.getAbsolutePath() + "]到[" + targetFile.getAbsolutePath() + "]时发生错误: " + e.getMessage());
+                }
+            }
+        }
     }
 
     public Long computeIfAbsentProject(ReportImParams params) {

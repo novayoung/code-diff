@@ -178,7 +178,7 @@ public class ProjectInfoServiceImpl extends ServiceImpl<ProjectInfoMapper, Proje
             }
         });
         if(Objects.isNull(execFiles) || execFiles.length == 0){
-            log.info("{}目录中没有exec数据");
+            log.info("{}目录中没有exec数据", dirPath);
             return;
         }
         String newFilePath = fileUtil.addPath(dirPath, JacocoConst.EXEC_MERGE_FILE_NAME);

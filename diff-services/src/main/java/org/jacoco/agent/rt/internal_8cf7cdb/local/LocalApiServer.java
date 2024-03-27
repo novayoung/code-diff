@@ -1,8 +1,11 @@
 package org.jacoco.agent.rt.internal_8cf7cdb.local;
 
 import cn.hutool.core.io.FileUtil;
+import cn.hutool.core.util.XmlUtil;
 import cn.hutool.core.util.ZipUtil;
 import cn.hutool.crypto.SecureUtil;
+import cn.hutool.http.HttpUtil;
+import cn.hutool.json.JSONUtil;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
@@ -34,13 +37,12 @@ import org.jacoco.cli.internal.report.*;
 import org.jacoco.cli.internal.report.html.HTMLFormatter;
 
 import java.io.*;
-import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.*;
@@ -49,10 +51,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.stream.Collectors;
 
+@Setter
+@Getter
 @ToString
-public class LocalApiServer extends Thread implements HttpHandler {
+public class LocalApiServer implements HttpHandler, Runnable {
 
-    private static final String BASE_PACKAGE = "com" + File.separator + "test"; //todo
+    private static final String BASE_PACKAGE = "com" + File.separator + "intramirror"; //todo
 
     private static final String SRC_FLAG = File.separator + "src" + File.separator + "main" + File.separator + "java";
 
@@ -95,6 +99,18 @@ public class LocalApiServer extends Thread implements HttpHandler {
 
     private boolean isMasterCopied = false;
 
+    private String gitUser;
+
+    private String gitPass;
+
+    private String gitConfigUser;
+
+    private String gitUrl;
+
+    private Integer coverageRate;
+
+    private int pushInterval = 60 * 1000;
+
     LocalApiServer(String root, int port, int filePort, int dumpPort, String sourcePath, String classPath, String workspace, String appName, Boolean refresh, Long refreshInterval, String mergeLevel, String curBranch) {
         this.root = root;
         this.port = port;
@@ -120,13 +136,16 @@ public class LocalApiServer extends Thread implements HttpHandler {
 //        int randomPort = 6000 + new Random().nextInt(1000);
         int port = FileHttpServer.tryPort(Integer.parseInt(System.getProperty("coverage.local.port", "6500")));
         String workspace = System.getProperty("coverage.local.ws");
+        if (workspace == null) {
+            workspace = guessWs();
+        }
         String app = System.getProperty("coverage.local.app");
         String sourcePath = System.getProperty("coverage.local.source", "");
         String classPath = System.getProperty("coverage.local.class", "");
-        Boolean refresh =  Boolean.valueOf(System.getProperty("coverage.local.refresh", "false"));
+        Boolean refresh =  Boolean.valueOf(System.getProperty("coverage.local.refresh", "true"));
         Long refreshInterval =  Long.valueOf(System.getProperty("coverage.local.refresh.interval", "5000"));
         String mergeLevel = System.getProperty("coverage.local.mergeLevel", "method");
-        String curBranch = execCmd(workspace, "git rev-parse --abbrev-ref HEAD");
+        String curBranch = execCmd(workspace, "git branch --show-current");
         System.setProperty("eureka.instance.metadata-map.coverageLocalBranch", curBranch);
         System.setProperty("eureka.instance.metadata-map.coverageLocalRefresh", String.valueOf(refresh));
 
@@ -143,10 +162,55 @@ public class LocalApiServer extends Thread implements HttpHandler {
         if (sourcePath.equals("") || classPath.equals("")) {
             return null;
         }
-
         LocalApiServer localApiServer = new LocalApiServer(root, port, filePort, dumpPort, sourcePath, classPath, workspace, app, refresh, refreshInterval, mergeLevel, curBranch);
-        localApiServer.setName("CoverageRefreshThread");
-        localApiServer.start();
+        String configPushInterval = System.getProperty("coverage.local.pushInterval", "");
+        if (!"".equals(configPushInterval)) {
+            localApiServer.pushInterval = Integer.parseInt(configPushInterval);
+        }
+
+        String requestUrl = "http://127.0.0.1:8888/api/rpc/coverage/localConfig";
+        List<Object> body = new LinkedList<>();
+        body.add(localApiServer.toString());
+        String resp = HttpUtil.post(requestUrl, JSONUtil.toJsonStr(body));
+        Map<String, Object> map = JSONUtil.toBean(resp, Map.class);
+        if (!"1".equalsIgnoreCase((String) map.get("code"))) {
+            return null;
+        }
+        String gitUser = (String) map.get("gitUser");
+        String gitPass = (String) map.get("gitPass");
+        String pushInterval = (String) map.get("pushInterval");
+
+        if (gitUser != null) {
+            localApiServer.setGitUser(gitUser);
+        }
+        if (gitPass != null) {
+            localApiServer.setGitPass(gitPass);
+        }
+        if (pushInterval != null) {
+            localApiServer.pushInterval = Integer.parseInt(pushInterval);
+        }
+
+        String gitConfigUser = execCmd(workspace, "git config user.name");
+        localApiServer.setGitConfigUser(gitConfigUser);
+
+        String gitUrl = execCmd(workspace,"git config --get remote.origin.url");
+        if (gitUrl.startsWith("ssh")) {
+            List<Object> gitUrlBody = new LinkedList<>();
+            Map<String, Object> gitUrlMap = new HashMap<>();
+            gitUrlMap.put("gitUrl", gitUrl);
+            gitUrlBody.add(gitUrlMap);
+            String gitUrlResp = HttpUtil.post("http://127.0.0.1:8888/api/rpc/coverage/localGitUrl", JSONUtil.toJsonPrettyStr(gitUrlBody));
+            Map<String, Object> gitUrlRespMap = JSONUtil.toBean(gitUrlResp, Map.class);
+            if (!"1".equalsIgnoreCase((String) gitUrlRespMap.get("code"))) {
+                return null;
+            }
+            gitUrl = (String) gitUrlRespMap.get("gitUrl");
+        }
+        localApiServer.setGitUrl(gitUrl);
+
+        Thread refreshThread = new Thread(localApiServer, "CoverageRefreshThread");
+        refreshThread.start();
+
         HttpServer server;
         try {
             System.out.println("coverage local port: " + localApiServer.port);
@@ -169,6 +233,19 @@ public class LocalApiServer extends Thread implements HttpHandler {
         server.createContext("/", localApiServer);
         server.start();
         return localApiServer;
+    }
+
+    private static String guessWs() {
+        String classFilePath = LocalApiServer.class.getResource("/").getPath();
+        System.out.println(classFilePath);
+        File wsFile = new File(classFilePath).getParentFile().getParentFile();
+        if (new File(wsFile.getParentFile().getAbsolutePath() + File.separator + "pom.xml").exists()) {
+            String parentWs = wsFile.getParentFile().getAbsolutePath();
+            System.out.println("ws root: " + parentWs);
+            return parentWs;
+        }
+        System.out.println("ws dir: " + wsFile.getAbsolutePath());
+        return wsFile.getAbsolutePath();
     }
 
     @SneakyThrows
@@ -299,13 +376,14 @@ public class LocalApiServer extends Thread implements HttpHandler {
         }
     }
 
-    private synchronized void compressZip(String app, String branch) {
+    private synchronized String compressZip(String app, String branch) {
         String reportZipPath = root + File.separator + baseDir + File.separator + app + File.separator + branch + File.separator + "exportReport.zip";
         if (FileUtil.exist(reportZipPath)) {
             FileUtil.del(reportZipPath);
         }
         String reportDirPath = root + File.separator + baseDir + File.separator + app + File.separator + branch + File.separator + "report";
         ZipUtil.zip(reportDirPath, reportZipPath);
+        return reportZipPath;
     }
 
     private synchronized void clear() {
@@ -374,7 +452,7 @@ public class LocalApiServer extends Thread implements HttpHandler {
             if (!classIdNameList.isEmpty()) {
                 String content = String.join("\n", classIdNameList);
                 Files.write(Paths.get(timestampClassIdFilePath), content.getBytes(StandardCharsets.UTF_8));
-                timestampClassNameIdMap = classIdNameList.stream().map(e -> e.split(":")).collect(Collectors.toMap(e -> e[1], e -> e[0]));
+                timestampClassNameIdMap = classIdNameList.stream().distinct().map(e -> e.split(":")).collect(Collectors.toMap(e -> e[1], e -> e[0]));
             }
 
             /*
@@ -399,7 +477,6 @@ public class LocalApiServer extends Thread implements HttpHandler {
             String masterCloneSourceDir = root + File.separator + baseDir + File.separator + this.appName +File.separator + "master_clone";
             if (!isMasterCheckout) {    // only once
                 File masterSourceFile = new File(masterCloneSourceDir);
-                String gitUrl = execCmd(this.workspace,"git config --get remote.origin.url");
                 String masterCloneSourceGitDir;
                 if (masterSourceFile.exists()) {
                     masterCloneSourceGitDir = Objects.requireNonNull(masterSourceFile.listFiles())[0].getAbsolutePath();
@@ -407,7 +484,11 @@ public class LocalApiServer extends Thread implements HttpHandler {
                     execCmd(masterCloneSourceGitDir, "git pull origin master");
                 } else {
                     masterSourceFile.mkdirs();
-                    execCmd(masterCloneSourceDir, "git clone " + gitUrl);
+                    String cloneUrl = gitUrl;
+                    if (gitUser != null && gitPass != null && !gitUser.trim().equals("") && !gitPass.trim().equals("")) {
+                        cloneUrl = appendGitUserPass(gitUrl, gitUser, gitPass);
+                    }
+                    execCmd(masterCloneSourceDir, "git clone " + cloneUrl);
                     masterCloneSourceGitDir = Objects.requireNonNull(masterSourceFile.listFiles())[0].getAbsolutePath();
                     execCmd(masterCloneSourceGitDir, "git fetch origin");
                 }
@@ -458,7 +539,7 @@ public class LocalApiServer extends Thread implements HttpHandler {
             timestampDirFile.renameTo(orgDirFile);
         } else {
             addClassFiles(orgClassDirPath, orgClassFileList);
-            orgClassNameIdMap = Files.readAllLines(Paths.get(orgClassIdFilePath)).stream().map(e -> e.split(":")).collect(Collectors.toMap(e -> e[1], e -> e[0]));
+            orgClassNameIdMap = Files.readAllLines(Paths.get(orgClassIdFilePath)).stream().distinct().map(e -> e.split(":")).collect(Collectors.toMap(e -> e[1], e -> e[0]));
 
             //todo 找出修改，删除的class, 如果是删除, 则去掉探针，如果是修改，则探针重置，其他合并
             Map<String, String> finalOrgClassNameIdMap = orgClassNameIdMap;
@@ -523,19 +604,14 @@ public class LocalApiServer extends Thread implements HttpHandler {
         /*
          * post to server
          */
-        String requestUrl = "http://test-arch-framework-admin.intramirror.cn/api/rpc/coverage/local?sign + " + sign;
-        URL url = new URL(requestUrl);
-        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-        connection.setRequestMethod("POST");
-        connection.setDoOutput(true);
-        connection.setRequestProperty("Content-Type", "application/json");
-        try (OutputStream outputStream = connection.getOutputStream()) {
-            String body = "[\"" + this.toString() + "\"]";
-            byte[] postDataBytes = body.getBytes(StandardCharsets.UTF_8);
-            outputStream.write(postDataBytes, 0, postDataBytes.length);
-            outputStream.flush();
+        String requestUrl = "http://127.0.0.1:8888/api/rpc/coverage/local?sign + " + sign;
+        List<Object> body = new LinkedList<>();
+        body.add(this.toString());
+        String resp = HttpUtil.post(requestUrl, JSONUtil.toJsonPrettyStr(body));
+        Map<String, Object> map = JSONUtil.toBean(resp, Map.class);
+        if (!"1".equalsIgnoreCase((String) map.get("code"))) {
+            return;
         }
-        connection.disconnect();
 
         /*
          * 5. generate report to root
@@ -548,6 +624,13 @@ public class LocalApiServer extends Thread implements HttpHandler {
         addClassFiles(orgClassDirPath, reportClassFiles);
         IBundleCoverage bundle = analyze(this.appName, reportLoader.getExecutionDataStore(), reportClassFiles);
         writeReports(bundle, reportLoader, new File(reportDirPath));
+    }
+
+    private String appendGitUserPass(String gitUrl, String user, String pass) {
+        if (gitUrl.startsWith("http")) {
+            gitUrl = gitUrl.replace("://", "://" + user + ":" + pass + "@");
+        }
+        return gitUrl;
     }
 
     private String getCommonCommitId(String workspace, String masterCloneSourceDir) {
@@ -655,7 +738,7 @@ public class LocalApiServer extends Thread implements HttpHandler {
             if (packageName != null && packageMapping != null) {
                 packageMapping.put(className, packageName);
             }
-            Files.copy(Paths.get(classFilePath), Paths.get(timestampJavaPath + File.separator + javaFileName));
+            Files.copy(Paths.get(classFilePath), Paths.get(timestampJavaPath + File.separator + javaFileName), StandardCopyOption.REPLACE_EXISTING);
             return;
         }
         for (File child : Objects.requireNonNull(file.listFiles())) {
@@ -851,7 +934,7 @@ public class LocalApiServer extends Thread implements HttpHandler {
             if (!destDir.exists()) {
                 destDir.mkdirs();
             }
-            Files.copy(Paths.get(classFilePath), Paths.get(timestampClassPath + File.separator + classFileName));
+            Files.copy(Paths.get(classFilePath), Paths.get(timestampClassPath + File.separator + classFileName), StandardCopyOption.REPLACE_EXISTING);
             String className = getClassName(classFilePath);
             String classId = getClassId(classFilePath);
             classIdNameList.add(classId + ":" + className);
@@ -912,11 +995,53 @@ public class LocalApiServer extends Thread implements HttpHandler {
                     continue;
                 }
                 exec(null);
-                System.out.println(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.sss").format(new Date()) + ": auto refresh coverage report");
+                push();
+                //System.out.println(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.sss").format(new Date()) + ": auto refresh coverage report");
             } catch (Exception e) {
                 e.printStackTrace();
             }
         }
+    }
+
+    private long lastPushTimestamp;
+
+    private int lastCoverageRate;
+
+    private void push() {
+        if (lastPushTimestamp > 0L && System.currentTimeMillis() - lastPushTimestamp <  pushInterval) {
+            return;
+        }
+        try {
+            Integer coverageRate = parseCoverage(String.format("http://127.0.0.1:%s/code-coverage/%s/%s/report/index.html", this.filePort, this.appName, this.curBranch));
+            if (coverageRate == null) {
+                return;
+            }
+            this.coverageRate = coverageRate;
+            if (this.coverageRate < 0 || this.lastCoverageRate == this.coverageRate) {
+                return;
+            }
+            this.lastCoverageRate = coverageRate;
+            String json = JSONUtil.toJsonPrettyStr(this);
+            Map<String, Object> map = JSONUtil.toBean(json, Map.class);
+            List<Object> body = new ArrayList<>();
+            body.add(map);
+            body.add(FileUtil.readBytes(compressZip(this.appName, this.curBranch)));
+            String requestUrl = "http://127.0.0.1:8888/api/rpc/coverage/localPushReport";
+            HttpUtil.post(requestUrl, JSONUtil.toJsonStr(body));
+            lastPushTimestamp = System.currentTimeMillis();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private Integer parseCoverage(String reportUrl) {
+        String xml = HttpUtil.get(reportUrl).replace("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">", "");
+        org.w3c.dom.NodeList nodeList = XmlUtil.parseXml(xml).getDocumentElement().getElementsByTagName("tfoot");
+        if (nodeList == null || nodeList.getLength() == 0) {
+            return -1;
+        }
+        String coverage = nodeList.item(0).getChildNodes().item(0).getChildNodes().item(2).getTextContent().replace("%", "");
+        return Integer.valueOf(coverage);
     }
 
     private static class MethodVisitor extends VoidVisitorAdapter<List<JavaMethodInfo>> {
@@ -970,7 +1095,6 @@ public class LocalApiServer extends Thread implements HttpHandler {
                     .build();
             list.add(methodInfo);
         }
-
     }
 
     @Data

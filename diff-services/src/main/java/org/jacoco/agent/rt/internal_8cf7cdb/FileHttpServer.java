@@ -101,6 +101,8 @@ public class FileHttpServer implements HttpHandler {
 
     private final int port;
 
+    private static boolean localFlag;
+
     private static volatile boolean running = false;
 
     FileHttpServer(String root, int port) {
@@ -113,6 +115,7 @@ public class FileHttpServer implements HttpHandler {
             return null;
         }
         running = true;
+        localFlag = local;
         String root = System.getProperty("fileHttpServer.root", "/");
         if (local && root.equals("/")) {
             root = "~";
@@ -168,6 +171,12 @@ public class FileHttpServer implements HttpHandler {
             return;
         }
         if (file.isDirectory()) {
+            if (localFlag) {
+                httpExchange.sendResponseHeaders(200, 0);
+                httpExchange.getResponseBody().write("".getBytes());
+                httpExchange.getResponseBody().close();
+                return;
+            }
             String files = Arrays.stream(Objects.requireNonNull(file.listFiles())).map(File::getName).collect(Collectors.joining("\n"));
             if ("html".equals(queryMap.get("format"))) {
                 if (path.equals("/")) {

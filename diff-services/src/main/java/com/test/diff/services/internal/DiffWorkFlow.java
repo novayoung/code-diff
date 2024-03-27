@@ -13,13 +13,16 @@ import com.test.diff.services.params.ProjectDiffParams;
 import com.test.diff.services.service.ProjectInfoService;
 import com.test.diff.services.service.RepoInfoService;
 import com.test.diff.services.utils.FileUtil;
+import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.DiffCommand;
 import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.ListBranchCommand;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.diff.DiffFormatter;
 import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevWalk;
@@ -65,13 +68,14 @@ public class DiffWorkFlow {
         //获取base repository
         BaseRepository baseRepository = initRepository(projectInfo);
 
-        Git baseGit = null,newGit = null;
+        Git baseGit = null, newGit = null;
         AbstractTreeIterator baseTree, newTree;
         try {
             switch (DiffTypeEnum.getDiffTypeByCode(params.getDiffTypeCode())) {
                 case BRANCH_DIFF:
-                    baseGit = syncCode(baseRepository, projectInfo, params.getOldVersion(), "", true);
                     newGit = syncCode(baseRepository, projectInfo, params.getNewVersion(), "", true);
+                    List<String> commitIds = getRecentCommitIdsOnBranch(newGit, params.getNewVersion(), 100);
+                    baseGit = syncCode(baseRepository, projectInfo, params.getOldVersion(), "", true, commitIds);
                     baseTree = baseRepository.prepareTreeParser(baseGit.getRepository(), params.getOldVersion());
                     newTree = baseRepository.prepareTreeParser(newGit.getRepository(), params.getNewVersion());
                     break;
@@ -110,12 +114,28 @@ public class DiffWorkFlow {
         }
     }
 
-    private BaseRepository initRepository(ProjectInfo projectInfo){
-        if(Objects.isNull(projectInfo)){
+    @SneakyThrows
+    public static List<String> getRecentCommitIdsOnBranch(Git git, String branch, int limit) {
+        List<String> commitIds = new ArrayList<>();
+        ObjectId headId = git.getRepository().resolve("refs/remotes/origin/" + branch + "^{commit}"); //.resolve("refs/heads/" + branch + "^{commit}");
+        try (RevWalk revWalk = new RevWalk(git.getRepository())) {
+            revWalk.markStart(revWalk.parseCommit(headId));
+            for (int i = 0; i < limit; i++) {
+                RevCommit commit = revWalk.next();
+                if (commit != null) {
+                    commitIds.add(commit.getName());
+                }
+            }
+            return commitIds;
+        }
+    }
+
+    private BaseRepository initRepository(ProjectInfo projectInfo) {
+        if (Objects.isNull(projectInfo)) {
             throw new BizException(StatusCode.PROJECT_INFO_NOT_EXISTS);
         }
         RepoInfo repoInfo = repoInfoService.getById(projectInfo.getRepoId());
-        if(Objects.isNull(repoInfo)){
+        if (Objects.isNull(repoInfo)) {
             throw new BizException(StatusCode.REPO_INFO_NOT_EXITS);
         }
         return RepositoryFactory.create(repoInfo);
@@ -123,13 +143,14 @@ public class DiffWorkFlow {
 
     /**
      * 处理差异类的diff
+     *
      * @param diffEntry
      * @param oldFilePath
      * @param newFilePath
      * @return
      */
-    private CompletableFuture<ClassInfo> diffHandle(DiffEntry diffEntry, String oldFilePath, String newFilePath, boolean ifFullParamName){
-        return CompletableFuture.supplyAsync(() ->{
+    private CompletableFuture<ClassInfo> diffHandle(DiffEntry diffEntry, String oldFilePath, String newFilePath, boolean ifFullParamName) {
+        return CompletableFuture.supplyAsync(() -> {
             ICodeComparator codeComparator = CodeComparatorFactory.createCodeComparator();
             return codeComparator.getDiffClassInfo(diffEntry, oldFilePath, newFilePath, ifFullParamName);
         }, executor);
@@ -137,24 +158,26 @@ public class DiffWorkFlow {
 
     /**
      * 获取java文件的额完整路径
+     *
      * @param git
      * @param packName
      * @return
      */
-    private String getFilePath(Git git, String packName){
+    private String getFilePath(Git git, String packName) {
         return git.getRepository().getDirectory().getAbsolutePath()
                 .replace(GitConst.GIT_FILE_SUFFIX, "") + packName;
     }
 
     /**
      * 获取差异类
+     *
      * @param newGit
      * @param baseTree
      * @param newTree
      * @return
      * @throws GitAPIException
      */
-    private List<DiffEntry> getDiffCodeClasses(Git newGit,AbstractTreeIterator baseTree,
+    private List<DiffEntry> getDiffCodeClasses(Git newGit, AbstractTreeIterator baseTree,
                                                AbstractTreeIterator newTree) throws GitAPIException {
         DiffCommand diff = newGit.diff();
         List<DiffEntry> list = diff.setOldTree(baseTree).setNewTree(newTree).setShowNameAndStatusOnly(true).call();
@@ -174,16 +197,35 @@ public class DiffWorkFlow {
                 .collect(Collectors.toList());
     }
 
+    @SneakyThrows
+    private Git syncCode(BaseRepository baseRepository, ProjectInfo projectInfo,
+                         String branch, String commitId, boolean isBranchDiff) {
+        return syncCode(baseRepository, projectInfo, branch, commitId, isBranchDiff, null);
+    }
 
     private Git syncCode(BaseRepository baseRepository, ProjectInfo projectInfo,
-                         String branch, String commitId, boolean isBranchDiff) throws IOException {
+                         String branch, String commitId, boolean isBranchDiff, List<String> newCommitIds) throws IOException {
         //这里直接生成路径
         String branch_path = fileUtil.getRepoPath(projectInfo, branch);
-        if(!isBranchDiff){
+        if (!isBranchDiff) {
             branch_path = branch_path + "_" + commitId + File.separator + "source";
         }
-        return updateCode(baseRepository, branch_path,
-                projectInfo.getProjectName(),projectInfo.getProjectUrl(), branch, commitId, isBranchDiff);
+        Git git = updateCode(baseRepository, branch_path,
+                projectInfo.getProjectName(), projectInfo.getProjectUrl(), branch, commitId, isBranchDiff);
+        if (newCommitIds != null) {
+            List<String> baseCommitIds = getRecentCommitIdsOnBranch(git, branch, 100);
+            String commonCommitId = null;
+            for (String baseCommitId : baseCommitIds) {
+                if (newCommitIds.contains(baseCommitId)) {
+                    commonCommitId = baseCommitId;
+                    break;
+                }
+            }
+            if (commonCommitId != null) {
+                baseRepository.pullByCommitId(fileUtil.addPath(branch_path, GitConst.GIT_FILE_SUFFIX), branch, commonCommitId);
+            }
+        }
+        return git;
     }
 
     /**
@@ -191,29 +233,30 @@ public class DiffWorkFlow {
      * 后期都改成了由group/env/project，这里就不适用了，没有传group和env，所以直接不用
      * 改为上游方法中直接调用fileUtil类中方法直接生成path
      * 检查项目路径是否正确
-     * @param path 项目路径
+     *
+     * @param path        项目路径
      * @param projectName 项目名
-     * @param branch 分支名
+     * @param branch      分支名
      * @return
      */
     @Deprecated
     private String checkProjectPath(String path, String projectName, String branch,
-                                    String commitId, boolean isBranchDiff){
-        if(!path.startsWith(FileConst.DIFF_ROOT_PATH)){
+                                    String commitId, boolean isBranchDiff) {
+        if (!path.startsWith(FileConst.DIFF_ROOT_PATH)) {
             path = FileConst.DIFF_ROOT_PATH;
         }
-        if(!path.contains(projectName)){
+        if (!path.contains(projectName)) {
             path = fileUtil.addPath(path, projectName);
         }
         //分支名中的‘/’符号使用下划线代替（目录无法使用‘/’命名）
-        if(branch.contains("/")){
+        if (branch.contains("/")) {
             branch = branch.replaceAll("/", "_");
         }
-        if(!path.contains(branch)){
-            if(isBranchDiff){
+        if (!path.contains(branch)) {
+            if (isBranchDiff) {
                 path = fileUtil.addPath(path, branch);
-            }else{
-                path = fileUtil.addPath(path, branch+"_"+commitId);
+            } else {
+                path = fileUtil.addPath(path, branch + "_" + commitId);
             }
         }
         return path;
@@ -221,6 +264,7 @@ public class DiffWorkFlow {
 
 
     private final Map<String, Object> updateCodeLocks = new ConcurrentHashMap<>();
+
     private Git updateCode(BaseRepository repository, String path,
                            String projectName, String projectUrl,
                            String branch, String commitId, boolean isBranchDiff) throws IOException {
@@ -228,8 +272,8 @@ public class DiffWorkFlow {
         Object lock = updateCodeLocks.computeIfAbsent(path, (k) -> new Object());
         synchronized (lock) {
             String gitPath = fileUtil.addPath(path, GitConst.GIT_FILE_SUFFIX);
-            if(new File(path).exists()){
-                if(this.threadLocal.get().isUpdateCode() && isBranchDiff){
+            if (new File(path).exists()) {
+                if (this.threadLocal.get().isUpdateCode() && isBranchDiff) {
                     repository.pull(gitPath, branch);
                 }
                 Git git;
@@ -243,9 +287,9 @@ public class DiffWorkFlow {
                 }
                 return git;
             }
-            if(isBranchDiff){
+            if (isBranchDiff) {
                 return repository.clone(projectUrl, path, branch);
-            }else{
+            } else {
                 //不存在就先克隆项目
                 Git git = repository.clone(projectUrl, path, branch);
                 //然后再回退到指定commit id 版本
