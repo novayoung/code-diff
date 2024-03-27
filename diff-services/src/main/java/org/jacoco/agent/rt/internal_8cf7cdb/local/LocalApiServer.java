@@ -21,6 +21,7 @@ import com.test.diff.common.domain.ClassInfo;
 import com.test.diff.common.domain.MethodInfo;
 import com.test.diff.common.enums.DiffResultTypeEnum;
 import lombok.*;
+import org.apache.logging.log4j.util.Strings;
 import org.jacoco.agent.rt.internal_8cf7cdb.FileHttpServer;
 import org.jacoco.cli.internal.JacocoApi;
 import org.jacoco.cli.internal.core.analysis.Analyzer;
@@ -37,7 +38,9 @@ import org.jacoco.cli.internal.report.*;
 import org.jacoco.cli.internal.report.html.HTMLFormatter;
 
 import java.io.*;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -110,6 +113,8 @@ public class LocalApiServer implements HttpHandler, Runnable {
     private Integer coverageRate;
 
     private int pushInterval = 60 * 1000;
+
+    private String localhost;
 
     LocalApiServer(String root, int port, int filePort, int dumpPort, String sourcePath, String classPath, String workspace, String appName, Boolean refresh, Long refreshInterval, String mergeLevel, String curBranch) {
         this.root = root;
@@ -207,6 +212,8 @@ public class LocalApiServer implements HttpHandler, Runnable {
             gitUrl = (String) gitUrlRespMap.get("gitUrl");
         }
         localApiServer.setGitUrl(gitUrl);
+
+        localApiServer.setLocalhost(String.join(",", getAllLocalHostIP()));
 
         Thread refreshThread = new Thread(localApiServer, "CoverageRefreshThread");
         refreshThread.start();
@@ -578,8 +585,10 @@ public class LocalApiServer implements HttpHandler, Runnable {
                         } else {
                             boolean[] timestampProbes = timestampData.getProbes();
                             boolean[] orgProbes = orgData.getProbes();
-                            for (int i = 0; i <timestampProbes.length; i++) {
-                                timestampProbes[i] = timestampProbes[i] | orgProbes[i];
+                            if (orgProbes.length >= timestampProbes.length) {
+                                for (int i = 0; i <timestampProbes.length; i++) {
+                                    timestampProbes[i] = timestampProbes[i] | orgProbes[i];
+                                }
                             }
                         }
                     }
@@ -751,6 +760,9 @@ public class LocalApiServer implements HttpHandler, Runnable {
     }
 
     private void resetProbe(String className, ExecutionData orgData, String orgClassPath, ClassCoverageImpl orgClassCoverage, ExecutionData timestampData, String timestampClassPath, ClassCoverageImpl timestampClassCoverage, ExecutionDataStore timestampExecutionDataStore) {
+        if (orgClassCoverage == null) {
+            return;
+        }
         List<JavaMethodInfo> sameMethods = getSameMethods(orgClassPath, timestampClassPath);
         List<MethodProbesInfo> orgMethodProbesInfos = orgClassCoverage.getMethodProbesInfos();
         for (MethodProbesInfo orgMethodProbesInfo : orgMethodProbesInfos) {
@@ -983,7 +995,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
     @SneakyThrows
     @Override
     public void run() {
-        Thread.sleep(30 * 1000);
+        Thread.sleep(90 * 1000L);
         while (true) {
             try {
                 Thread.sleep(refreshInterval);
@@ -1110,5 +1122,32 @@ public class LocalApiServer implements HttpHandler, Runnable {
         private String md5;
         private String methodUri;
         private String params;
+    }
+
+    public static List<String> getAllLocalHostIP() {
+        List<String> list = new ArrayList<>();
+        try {
+            Enumeration<NetworkInterface> interfaces;
+            interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface ni = interfaces.nextElement();
+                Enumeration<InetAddress> addresss = ni.getInetAddresses();
+                while(addresss.hasMoreElements()){
+                    InetAddress nextElement = addresss.nextElement();
+                    String hostAddress = nextElement.getHostAddress();
+                    if (isIp(hostAddress) && !"127.0.0.1".equals(hostAddress)) {
+                        list.add(hostAddress);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            //e.printStackTrace();
+        }
+        return list;
+    }
+
+    private static boolean isIp(String host) {
+        return host.matches("([1-9]|[1-9]\\d|1\\d{2}|2[0-4]\\d|25[0-5])" +
+                "(\\.(\\d|[1-9]\\d|1\\d{2}|2[0-4]\\d|25[0-5])){3}");
     }
 }
