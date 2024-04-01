@@ -20,6 +20,7 @@ import com.sun.net.httpserver.HttpServer;
 import com.test.diff.common.domain.ClassInfo;
 import com.test.diff.common.domain.MethodInfo;
 import com.test.diff.common.enums.DiffResultTypeEnum;
+import com.test.diff.services.consts.FileConst;
 import lombok.*;
 import org.apache.logging.log4j.util.Strings;
 import org.jacoco.agent.rt.internal_8cf7cdb.FileHttpServer;
@@ -59,7 +60,7 @@ import java.util.stream.Collectors;
 @ToString
 public class LocalApiServer implements HttpHandler, Runnable {
 
-    private static final String BASE_PACKAGE = "com" + File.separator + "intramirror"; //todo
+    private static final String BASE_PACKAGE = "com" + File.separator + FileConst.BASE_PACKAGE_NAME; //todo
 
     private static final String SRC_FLAG = File.separator + "src" + File.separator + "main" + File.separator + "java";
 
