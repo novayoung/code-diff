@@ -65,6 +65,8 @@ public class LocalApiServer implements HttpHandler, Runnable {
 
     private final String root;
 
+    private final long sessionTimestamp = System.currentTimeMillis();
+
     private final int port;
 
     private final int filePort;
@@ -542,6 +544,13 @@ public class LocalApiServer implements HttpHandler, Runnable {
 
         Map<String, String> orgClassNameIdMap;
         File orgDirFile = new File(orgDirPath);
+
+        if (orgDirFile.exists()) {
+            if (!new File(orgClassIdFilePath).exists() || !new File(orgExecFilePath).exists()) {
+                deleteFolder(new File(orgDirPath));
+            }
+        }
+
         if (!orgDirFile.exists()) {
             timestampDirFile.renameTo(orgDirFile);
         } else {
@@ -631,7 +640,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
         reportLoader.load(new File(orgExecFilePath));
         List<File> reportClassFiles = new LinkedList<>();
         addClassFiles(orgClassDirPath, reportClassFiles);
-        IBundleCoverage bundle = analyze(this.appName, reportLoader.getExecutionDataStore(), reportClassFiles);
+        IBundleCoverage bundle = analyze(this.appName + " (" + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()) + ")", reportLoader.getExecutionDataStore(), reportClassFiles);
         writeReports(bundle, reportLoader, new File(reportDirPath));
     }
 
