@@ -2,13 +2,19 @@ package com.test.diff.services.service.impl;
 
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.http.HttpUtil;
+import com.adrninistrator.jacg.dboper.DbOperWrapper;
+import com.adrninistrator.jacg.dboper.DbOperator;
 import com.test.diff.services.base.controller.result.BaseResult;
 import com.test.diff.services.consts.FileConst;
+import com.test.diff.services.dto.FeignCall;
 import com.test.diff.services.enums.StatusCode;
 import com.test.diff.services.params.CallGraphParams;
 import com.test.diff.services.service.CallGraphService;
 import com.test.diff.services.utils.CallGraphUtils;
 import com.test.diff.services.utils.JarUtil;
+import com.test.diff.services.utils.OsUtils;
+import lombok.SneakyThrows;
+import org.apache.commons.io.IOUtils;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
@@ -105,6 +111,37 @@ public class CallGraphServiceImpl implements CallGraphService {
         synchronized (lock) {
             return doFindCallee(params);
         }
+    }
+
+    @Override
+    public BaseResult findFeigns(CallGraphParams params) {
+        String service = params.getService().toLowerCase();
+        Object lock = locks.computeIfAbsent(service, k -> new Object());
+        if (runningJob.containsKey(service)) {
+            return BaseResult.error(StatusCode.OTHER_ERROR, "数据库刷新中，请稍后");
+        }
+        synchronized (lock) {
+            return doFindFeigns(params);
+        }
+    }
+
+    @SneakyThrows
+    private BaseResult doFindFeigns(CallGraphParams params) {
+        String service = params.getService().toLowerCase();
+        String dirPath = getDBDir(params.getGroup(), params.getEnv(), service);
+        String dbFile = getDbFile(params.getGroup(), params.getEnv(), service);
+        if (!FileUtil.exist(dbFile + ".mv.db")) {
+            doRefreshDB(params);
+        }
+        DbOperWrapper dbOperWrapper = CallGraphUtils.buildDbOperWrapper(dirPath, service, dbFile, "doFindFeigns");
+        DbOperator dbOperator = dbOperWrapper.getDbOperator();
+        String sql = String.join(" ", IOUtils.readLines(this.getClass().getResourceAsStream("/service_feign.sql")));
+        sql = sql.replace("{app}", service.replace("-", "_"));
+        if (OsUtils.isWindows()) {
+            sql = sql.replace("$1", "\\1");
+        }
+        List<FeignCall> data = dbOperator.queryList(sql, FeignCall.class);
+        return BaseResult.success(data);
     }
 
     private BaseResult doFindCallee(CallGraphParams params) {

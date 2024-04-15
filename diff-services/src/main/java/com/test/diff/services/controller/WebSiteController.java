@@ -201,6 +201,18 @@ public class WebSiteController {
         return callGraphService.findCallee(params);
     }
 
+    @PostMapping(value = "/generate/findFeigns", produces = "application/json;charset=UTF-8")
+    public BaseResult findFeigns(@Validated  @RequestBody CallGraphParams params){
+        String group = params.getGroup();
+        String service = params.getService();
+        String env = params.getEnv();
+        log.info("group {}, service {}, env {}", group, service, env);
+        if (StringUtils.isBlank(group) || StringUtils.isBlank(service) || StringUtils.isBlank(env)) {
+            throw new RuntimeException("参数不能为空!");
+        }
+        return callGraphService.findFeigns(params);
+    }
+
     /**
      * 开始或继续收集
      * @param apps 应用id列表

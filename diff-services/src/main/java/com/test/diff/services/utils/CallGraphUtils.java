@@ -47,8 +47,7 @@ public class CallGraphUtils {
         FileUtil.del(reportDir);
         RunnerGenAllGraph4Callee runnerGenAllGraph4Caller = new RunnerGenAllGraph4Callee();
         ConfigureWrapper configureWrapper = buildConfigureWrapper(ws, service, dbFile);
-
-        DbOperWrapper dbOperWrapper = DbOperWrapper.genInstance(configureWrapper, RunnerGenAllGraph4Callee.class.getSimpleName());
+        DbOperWrapper dbOperWrapper = buildDbOperWrapper(ws, service, dbFile, RunnerGenAllGraph4Callee.class.getSimpleName());
         DbOperator dbOperator = dbOperWrapper.getDbOperator();
         String appName = configureWrapper.getMainConfig(ConfigKeyEnum.CKE_APP_NAME);
         configureWrapper.setOtherConfigSet(OtherConfigFileUseSetEnum.OCFUSE_METHOD_CLASS_4CALLEE, replaceMethods(dbOperator, appName, methods));
@@ -123,6 +122,11 @@ public class CallGraphUtils {
             dbOperator.closeDs();
         }
 
+    }
+
+    public static DbOperWrapper buildDbOperWrapper(String ws, String service, String dbFile, String name) {
+        ConfigureWrapper configureWrapper = buildConfigureWrapper(ws, service, dbFile);
+        return DbOperWrapper.genInstance(configureWrapper, name);
     }
 
     private static String findCommentByFullMethod(DbOperator dbOperator, String appName, String fullMethod) {

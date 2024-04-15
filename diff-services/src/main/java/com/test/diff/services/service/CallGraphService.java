@@ -13,4 +13,6 @@ public interface CallGraphService {
     com.test.diff.services.base.controller.result.BaseResult findCaller(CallGraphParams params);
 
     com.test.diff.services.base.controller.result.BaseResult findCallee(CallGraphParams params);
+
+    com.test.diff.services.base.controller.result.BaseResult findFeigns(CallGraphParams params);
 }
