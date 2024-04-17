@@ -1,4 +1,5 @@
-select "m3_attribute_value" as "service", "m1_class_name" as "feign", "m1_full_method" as "method", REPLACE(REPLACE(REPLACE("m1_attribute_value", '[', ''), ']', ''), '"', '') as "uri"
+select "service", "feign", "method", "uri", "path" from (select "m3_attribute_value" as "service", "m1_class_name" as "feign", "m1_full_method" as "method",
+REPLACE(REPLACE(REPLACE("m1_attribute_value", '[', ''), ']', ''), '"', '') as "uri"
 from
 (
 select 
@@ -19,3 +20,8 @@ SELECT distinct call."callee_method_hash" FROM "jacg"."jacg_method_call_{app}" a
 "annotation_name" like '%FeignClient' and ("attribute_name" = 'name' or "attribute_name" = 'value')) m3
 
 where m3."m3_class_name" = m1."m1_class_name"
+) m1m3 left join 
+
+(select "attribute_value" as "path", "class_name" from "jacg"."jacg_class_annotation_{app}" where "class_name" in (
+SELECT "class_name" FROM "jacg"."jacg_class_annotation_{app}" where  "annotation_name" like '%FeignClient' and "attribute_name" = 'name'
+) and "annotation_name" like '%Mapping' and "attribute_name" = 'value') m2 on m2."class_name" = m1m3."feign"
