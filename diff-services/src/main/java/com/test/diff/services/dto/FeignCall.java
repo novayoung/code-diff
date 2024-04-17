@@ -13,4 +13,6 @@ public class FeignCall {
 
     private String uri;
 
+    private String path;
+
 }

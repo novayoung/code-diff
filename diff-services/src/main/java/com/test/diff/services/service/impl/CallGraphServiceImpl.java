@@ -14,6 +14,7 @@ import com.test.diff.services.utils.CallGraphUtils;
 import com.test.diff.services.utils.JarUtil;
 import com.test.diff.services.utils.OsUtils;
 import lombok.SneakyThrows;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.IOUtils;
 import org.springframework.stereotype.Service;
 
@@ -22,6 +23,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
+@Slf4j
 public class CallGraphServiceImpl implements CallGraphService {
 
     private Map<String, Object> locks = new HashMap<>();
@@ -137,9 +139,8 @@ public class CallGraphServiceImpl implements CallGraphService {
         DbOperator dbOperator = dbOperWrapper.getDbOperator();
         String sql = String.join(" ", IOUtils.readLines(this.getClass().getResourceAsStream("/service_feign.sql")));
         sql = sql.replace("{app}", service.replace("-", "_"));
-        if (OsUtils.isWindows()) {
-            sql = sql.replace("$1", "\\1");
-        }
+        sql = sql.replace("$1", "\\1");
+        log.info("sql: {}", sql);
         List<FeignCall> data = dbOperator.queryList(sql, FeignCall.class);
         return BaseResult.success(data);
     }
