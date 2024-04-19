@@ -336,7 +336,7 @@ public class CallGraphUtils {
         configureWrapper.setMainConfig(ConfigKeyEnum.CKE_CALL_GRAPH_OUTPUT_DETAIL, "1");
         configureWrapper.setMainConfig(ConfigKeyEnum.CKE_OUTPUT_ROOT_PATH, ws);
 
-        configureWrapper.setOtherConfigSet(OtherConfigFileUseSetEnum.OCFUSE_ALLOWED_CLASS_PREFIX, "com." + FileConst.BASE_PACKAGE_NAME);
+        configureWrapper.setOtherConfigSet(OtherConfigFileUseSetEnum.OCFUSE_ALLOWED_CLASS_PREFIX, "com." + FileConst.BASE_PACKAGE_NAME, "com." + FileConst.BASE_PACKAGE_NAME2);
 
         return configureWrapper;
     }

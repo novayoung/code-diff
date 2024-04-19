@@ -54,7 +54,9 @@ public class CallGraphServiceImpl implements CallGraphService {
             String jarFile = dirPath + File.separator + jar;
             String jarDir = jarFile.substring(0, jarFile.lastIndexOf("."));
             HttpUtil.downloadFile(url + "/" + jar, jarFile);
-            if (!JarUtil.hasAny(new File(jarFile), "BOOT-INF/classes/com/" + FileConst.BASE_PACKAGE_NAME + "/")) {
+            if (!JarUtil.hasAny(new File(jarFile), "BOOT-INF/classes/com/" + FileConst.BASE_PACKAGE_NAME + "/")
+                    && !JarUtil.hasAny(new File(jarFile), "BOOT-INF/classes/com/" + FileConst.BASE_PACKAGE_NAME2 + "/")
+            ) {
                 continue;
             }
             List<String> jarPaths = new ArrayList<>();
@@ -70,7 +72,8 @@ public class CallGraphServiceImpl implements CallGraphService {
                 if (!libJarFileName.endsWith(".jar")) {
                     continue;
                 }
-                if (JarUtil.hasAny(libJarFile, "com/" + FileConst.BASE_PACKAGE_NAME)) {
+                if (JarUtil.hasAny(libJarFile, "com/" + FileConst.BASE_PACKAGE_NAME)
+                        || JarUtil.hasAny(libJarFile, "com/" + FileConst.BASE_PACKAGE_NAME2)) {
                     jarPaths.add(libJarFile.getAbsolutePath());
                 }
             }

@@ -35,6 +35,7 @@ public class JarUtil {
         Set<String> prefixes = new HashSet<>();
         prefixes.add("BOOT-INF");
         prefixes.add("com/" + FileConst.BASE_PACKAGE_NAME);
+        prefixes.add("com/" + FileConst.BASE_PACKAGE_NAME2);
         uncompress(jarFile, tarDir, prefixes);
     }
 

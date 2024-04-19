@@ -21,10 +21,12 @@ import com.test.diff.common.domain.ClassInfo;
 import com.test.diff.common.domain.MethodInfo;
 import com.test.diff.common.enums.DiffResultTypeEnum;
 import com.test.diff.services.consts.FileConst;
+import jdk.internal.org.objectweb.asm.ClassReader;
+import jdk.internal.org.objectweb.asm.ClassVisitor;
 import lombok.*;
-import org.apache.logging.log4j.util.Strings;
 import org.jacoco.agent.rt.internal_8cf7cdb.FileHttpServer;
 import org.jacoco.cli.internal.JacocoApi;
+import org.jacoco.cli.internal.asm.Opcodes;
 import org.jacoco.cli.internal.core.analysis.Analyzer;
 import org.jacoco.cli.internal.core.analysis.CoverageBuilder;
 import org.jacoco.cli.internal.core.analysis.IBundleCoverage;
@@ -61,6 +63,8 @@ import java.util.stream.Collectors;
 public class LocalApiServer implements HttpHandler, Runnable {
 
     private static final String BASE_PACKAGE = "com" + File.separator + FileConst.BASE_PACKAGE_NAME; //todo
+
+    private static final String BASE_PACKAGE2 = "com" + File.separator + FileConst.BASE_PACKAGE_NAME2; //todo
 
     private static final String SRC_FLAG = File.separator + "src" + File.separator + "main" + File.separator + "java";
 
@@ -525,7 +529,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
                 isMasterCopied = true;
             }
 
-            getDiffCode(timestampSourceDirPath, timestampSourceDirPath, destMasterSourceDir, diffClassInfos, packageMapping);
+            getDiffCode(timestampSourceDirPath, timestampSourceDirPath, destMasterSourceDir, diffClassInfos, packageMapping, timestampClassDirPath);
         }
         if (!diffClassInfos.isEmpty()) {
             CoverageBuilder.setDiffList(diffClassInfos);
@@ -623,7 +627,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
         /*
          * post to server
          */
-        String requestUrl = "http://127.0.0.1:8888/api/rpc/coverage/local?sign + " + sign;
+        String requestUrl = "http://test-arch-framework-admin.intramirror.cn/api/rpc/coverage/local?sign + " + sign;
         List<Object> body = new LinkedList<>();
         body.add(this.toString());
         String resp = HttpUtil.post(requestUrl, JSONUtil.toJsonPrettyStr(body));
@@ -635,14 +639,17 @@ public class LocalApiServer implements HttpHandler, Runnable {
         /*
          * 5. generate report to root
          */
-        String reportDirPath = root + File.separator + baseDir + File.separator + this.appName + File.separator + this.curBranch + File.separator + "report";
-        deleteFolder(new File(reportDirPath));
-        ExecFileLoader reportLoader = new ExecFileLoader();
-        reportLoader.load(new File(orgExecFilePath));
-        List<File> reportClassFiles = new LinkedList<>();
-        addClassFiles(orgClassDirPath, reportClassFiles);
-        IBundleCoverage bundle = analyze(this.appName + " (" + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()) + ")", reportLoader.getExecutionDataStore(), reportClassFiles);
-        writeReports(bundle, reportLoader, new File(reportDirPath));
+        File execFile = new File(orgExecFilePath);
+        if (execFile.exists()) {
+            String reportDirPath = root + File.separator + baseDir + File.separator + this.appName + File.separator + this.curBranch + File.separator + "report";
+            deleteFolder(new File(reportDirPath));
+            ExecFileLoader reportLoader = new ExecFileLoader();
+            reportLoader.load(execFile);
+            List<File> reportClassFiles = new LinkedList<>();
+            addClassFiles(orgClassDirPath, reportClassFiles);
+            IBundleCoverage bundle = analyze(this.appName + " (" + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()) + ")", reportLoader.getExecutionDataStore(), reportClassFiles);
+            writeReports(bundle, reportLoader, new File(reportDirPath));
+        }
     }
 
     private String appendGitUserPass(String gitUrl, String user, String pass) {
@@ -665,13 +672,13 @@ public class LocalApiServer implements HttpHandler, Runnable {
         return null;
     }
 
-    private void getDiffCode(String branchSourceDir, String branchFilePath, String masterPath, List<ClassInfo> diffClassInfos, Map<String, String> packageMapping) {
+    private void getDiffCode(String branchSourceDir, String branchFilePath, String masterPath, List<ClassInfo> diffClassInfos, Map<String, String> packageMapping, String timestampClassDirPath) {
         File file = new File(branchFilePath);
         if (!file.isDirectory()) {
             String javaFileName = file.getName();
             String javaFilePath = file.getAbsolutePath();
             String classFileName = javaFilePath.replace(branchSourceDir, "").substring(1).replace(File.separator, ".");
-            if (!javaFileName.endsWith(".java") || !javaFilePath.contains("com" + File.separator + "intramirror")) {
+            if (!javaFileName.endsWith(".java") || (!javaFilePath.contains(BASE_PACKAGE) && !javaFilePath.contains(BASE_PACKAGE2))) {
                 return;
             }
             String masterJavaPath = masterPath + File.separator + javaFileName;
@@ -687,7 +694,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
             File destDir = new File(masterPath);
             List<JavaMethodInfo> branchMethodInfos = parseJavaFile(branchFilePath);
             if (!destDir.exists()) {
-                ClassInfo branchClassInfo = toClassInfo(packageMapping, classFileName, branchMethodInfos, null);
+                ClassInfo branchClassInfo = toClassInfo(packageMapping, classFileName, branchMethodInfos, null, timestampClassDirPath);
                 if (branchClassInfo != null) {
                     diffClassInfos.add(branchClassInfo);
                 }
@@ -696,9 +703,9 @@ public class LocalApiServer implements HttpHandler, Runnable {
 
             ClassInfo classInfo;
             if (!masterJavaFile.exists()) {
-                classInfo = toClassInfo(packageMapping, classFileName, branchMethodInfos, null);
+                classInfo = toClassInfo(packageMapping, classFileName, branchMethodInfos, null, timestampClassDirPath);
             } else {
-                classInfo = toClassInfo(packageMapping, classFileName, branchMethodInfos, parseJavaFile(masterJavaPath));
+                classInfo = toClassInfo(packageMapping, classFileName, branchMethodInfos, parseJavaFile(masterJavaPath), timestampClassDirPath);
             }
             if (classInfo != null) {
                 diffClassInfos.add(classInfo);
@@ -710,11 +717,11 @@ public class LocalApiServer implements HttpHandler, Runnable {
             if (child.isDirectory()) {
                 newTimestampJavaPath = masterPath + File.separator + child.getName();
             }
-            getDiffCode(branchSourceDir, child.getAbsolutePath(), newTimestampJavaPath, diffClassInfos, packageMapping);
+            getDiffCode(branchSourceDir, child.getAbsolutePath(), newTimestampJavaPath, diffClassInfos, packageMapping, timestampClassDirPath);
         }
     }
 
-    private ClassInfo toClassInfo(Map<String, String> packageMapping, String classFileName, List<JavaMethodInfo> branchMethodInfos, List<JavaMethodInfo> masterMethodInfos) {
+    private ClassInfo toClassInfo(Map<String, String> packageMapping, String classFileName, List<JavaMethodInfo> branchMethodInfos, List<JavaMethodInfo> masterMethodInfos, String timestampClassDirPath) {
         String className = classFileName.substring(0, classFileName.lastIndexOf("."));
         String packageName = packageMapping.get(className);
         className = className.replace(".", "/");
@@ -723,6 +730,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
             if (methodInfos.isEmpty()) {
                 return null;
             }
+            methodInfos = appendLambdaMethod(className, methodInfos, timestampClassDirPath);
             return ClassInfo.builder().className(className).packageName(packageName).diffType(DiffResultTypeEnum.ADD).methodInfos(methodInfos).build();
         }
         Set<String> sameMethod = new HashSet<>();
@@ -737,7 +745,51 @@ public class LocalApiServer implements HttpHandler, Runnable {
         if (diffMethods.isEmpty()) {
             return null;
         }
+        diffMethods = appendLambdaMethod(className, diffMethods, timestampClassDirPath);
         return ClassInfo.builder().className(className).packageName(packageName).diffType(DiffResultTypeEnum.MODIFY).methodInfos(diffMethods).build();
+    }
+
+    @SneakyThrows
+    private List<MethodInfo> appendLambdaMethod(String className, List<MethodInfo> diffMethods, String timestampClassDirPath) {
+        String branchClassFilePath = timestampClassDirPath + File.separator + className.replace("/", File.separator) + ".class";
+        byte[] bytecode = Files.readAllBytes(Paths.get(branchClassFilePath));
+        // 使用 ASM 解析字节码
+        ClassReader classReader = new ClassReader(bytecode);
+        ClassVisitor classVisitor = new ClassVisitor(Opcodes.ASM5) {
+            @Override
+            public jdk.internal.org.objectweb.asm.MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                String prefix = "lambda$";
+                if (name.startsWith(prefix)) {
+                    String methodName = name.substring(prefix.length());
+                    int idx = methodName.indexOf("$");
+                    if (idx > -1) {
+                        methodName = methodName.substring(0, idx);
+                    }
+                    String finalMethodName = methodName;
+                    MethodInfo hostMethodInfo = diffMethods.stream().filter(methodInfo -> methodInfo.getMethodName().equals(finalMethodName)).findFirst().orElse(null);
+                    if (hostMethodInfo != null) {
+                        String param = "";
+                        if (!descriptor.contains("()")) {
+                            String[] params = descriptor.substring(1, descriptor.indexOf(")")).split(";");
+                            for (String s : params) {
+                                if (s == null || s.trim().equalsIgnoreCase("")) {
+                                    continue;
+                                }
+                                idx = s.lastIndexOf("/");
+                                if (idx > -1) {
+                                    s = s.substring(idx + 1);
+                                }
+                                param = param + s + ";";
+                            }
+                        }
+                        diffMethods.add(MethodInfo.builder().methodName(name).params(param).md5(hostMethodInfo.getMd5() + name).diffType(hostMethodInfo.getDiffType()).build());
+                    }
+                }
+                return super.visitMethod(access, name, descriptor, signature, exceptions);
+            }
+        };
+        classReader.accept(classVisitor, ClassReader.EXPAND_FRAMES);
+        return diffMethods;
     }
 
     private void copySourceFile(String filePath, String timestampJavaPath, String packageName, Map<String, String> packageMapping) throws IOException {
@@ -745,7 +797,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
         if (!file.isDirectory()) {
             String javaFileName = file.getName();
             String classFilePath = file.getAbsolutePath();
-            if (!javaFileName.endsWith(".java") || !classFilePath.contains("com" + File.separator + "intramirror")) {
+            if (!javaFileName.endsWith(".java") || (!classFilePath.contains(BASE_PACKAGE) && !classFilePath.contains(BASE_PACKAGE2))) {
                 return;
             }
             File destDir = new File(timestampJavaPath);
@@ -949,7 +1001,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
         if (!file.isDirectory()) {
             String classFileName = file.getName();
             String classFilePath = file.getAbsolutePath();
-            if (!classFileName.endsWith(".class") || !classFilePath.contains("com" + File.separator + "intramirror")) {
+            if (!classFileName.endsWith(".class") || (!classFilePath.contains(BASE_PACKAGE) && !classFilePath.contains(BASE_PACKAGE2))) {
                 return;
             }
             File destDir = new File(timestampClassPath);
@@ -973,6 +1025,9 @@ public class LocalApiServer implements HttpHandler, Runnable {
 
     private String getClassName(String path) {
         int idx = path.indexOf(BASE_PACKAGE);
+        if (idx == -1) {
+            idx = path.indexOf(BASE_PACKAGE2);
+        }
         return path.substring(idx).replace(".class", "").replace(File.separator, ".");
     }
 

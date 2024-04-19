@@ -5,6 +5,8 @@ import cn.hutool.http.HttpUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.test.diff.common.domain.ClassInfo;
+import com.test.diff.common.domain.MethodInfo;
 import com.test.diff.common.util.JacksonUtil;
 import com.test.diff.services.base.controller.result.BaseResult;
 import com.test.diff.services.consts.FileConst;
@@ -27,8 +29,12 @@ import com.test.diff.services.utils.CommonUtil;
 import com.test.diff.services.utils.FileUtil;
 import com.test.diff.services.utils.JarUtil;
 import com.test.diff.services.utils.WildcardMatcher;
+import jdk.internal.org.objectweb.asm.ClassReader;
+import jdk.internal.org.objectweb.asm.ClassVisitor;
+import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.jacoco.cli.internal.asm.Opcodes;
 import org.jacoco.cli.internal.core.tools.ExecFileLoader;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -39,6 +45,7 @@ import javax.annotation.Resource;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.text.SimpleDateFormat;
 import java.util.*;
@@ -149,7 +156,7 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
         log.info("获取分支：{}，commit id:{}", sourceBranch, commitId);
 
         try {
-            String diffResult = null;
+            List<ClassInfo> classInfos = new LinkedList<>();
             if(params.getReportType() == ReportTypeEnum.INCREMENT.getCode()){
                 ProjectDiffParams diffParams = new ProjectDiffParams();
                 diffParams.setId(params.getProjectId());
@@ -178,7 +185,7 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
                     report.setReportType(ReportTypeEnum.INCREMENT.getCode());
                     report.setDiffType(DiffTypeEnum.COMMIT_DIFF.getCode());
                 }
-                diffResult = JacksonUtil.serialize(diffWorkFlow.diff(diffParams));
+                classInfos = diffWorkFlow.diff(diffParams);
             }
             else{
                 report.setNewBranch(sourceBranch);
@@ -195,6 +202,9 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
 
             List<String> sourcePaths = fileUtil.getAllSourcePathsByProject(sourceBranchDir);
             List<String> classFilePaths = fileUtil.getAllClassFilePathsByProject(classBranchDir);
+            for (String classFilePath : classFilePaths) {
+                appendLambda(classInfos, classFilePath);
+            }
 
             String name = String.format("env: %s | group: %s | project: %s | branch: %s",
                     projectInfo.getEnv(),
@@ -202,7 +212,7 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
                     projectInfo.getProjectName(),
                     params.getNewVersion()
             );
-            JacocoHandle.report(name, execFilePath, classFilePaths, sourcePaths, uuidDir, diffResult, filterRules);
+            JacocoHandle.report(name, execFilePath, classFilePaths, sourcePaths, uuidDir, classInfos.isEmpty() ? null : JacksonUtil.serialize(classInfos), filterRules);
             log.info("报告生成完成！");
             projectInfo.setReportStatus(ReportStatusEnum.REPORT_SUCCESS.getCode());
             projectInfoService.updateById(projectInfo);
@@ -490,6 +500,63 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
         }
         return list;
     }
+
+
+    private void appendLambda(List<ClassInfo> classInfos, String classFileDir) {
+        if (classInfos == null || classInfos.isEmpty()) {
+            return;
+        }
+        for (ClassInfo classInfo : classInfos) {
+            appendLambdaMethod(classInfo.getClassName(), classInfo.getMethodInfos(), classFileDir);
+        }
+    }
+
+    @SneakyThrows
+    private List<MethodInfo> appendLambdaMethod(String className, List<MethodInfo> diffMethods, String timestampClassDirPath) {
+        String branchClassFilePath = timestampClassDirPath + File.separator + className.replace("/", File.separator) + ".class";
+        if (!cn.hutool.core.io.FileUtil.exist(branchClassFilePath)) {
+            return diffMethods;
+        }
+        byte[] bytecode = Files.readAllBytes(Paths.get(branchClassFilePath));
+        // 使用 ASM 解析字节码
+        ClassReader classReader = new ClassReader(bytecode);
+        ClassVisitor classVisitor = new ClassVisitor(Opcodes.ASM5) {
+            @Override
+            public jdk.internal.org.objectweb.asm.MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                String prefix = "lambda$";
+                if (name.startsWith(prefix)) {
+                    String methodName = name.substring(prefix.length());
+                    int idx = methodName.indexOf("$");
+                    if (idx > -1) {
+                        methodName = methodName.substring(0, idx);
+                    }
+                    String finalMethodName = methodName;
+                    MethodInfo hostMethodInfo = diffMethods.stream().filter(methodInfo -> methodInfo.getMethodName().equals(finalMethodName)).findFirst().orElse(null);
+                    if (hostMethodInfo != null) {
+                        String param = "";
+                        if (!descriptor.contains("()")) {
+                            String[] params = descriptor.substring(1, descriptor.indexOf(")")).split(";");
+                            for (String s : params) {
+                                if (s == null || s.trim().equalsIgnoreCase("")) {
+                                    continue;
+                                }
+                                idx = s.lastIndexOf("/");
+                                if (idx > -1) {
+                                    s = s.substring(idx + 1);
+                                }
+                                param = param + s + ";";
+                            }
+                        }
+                        diffMethods.add(MethodInfo.builder().methodName(name).params(param).md5(hostMethodInfo.getMd5() + name).diffType(hostMethodInfo.getDiffType()).build());
+                    }
+                }
+                return super.visitMethod(access, name, descriptor, signature, exceptions);
+            }
+        };
+        classReader.accept(classVisitor, ClassReader.EXPAND_FRAMES);
+        return diffMethods;
+    }
+
 }
 
 

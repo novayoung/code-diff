@@ -27,7 +27,8 @@ public class FileConst {
      */
     public static final String DIR_SPLIT_SEPARATOR = "/|\\\\";
 
-    public static final String BASE_PACKAGE_NAME = "test1";   //todo
+    public static final String BASE_PACKAGE_NAME = "intramirror";   //todo
 
+    public static final String BASE_PACKAGE_NAME2 = "instramirror";   //todo
 
 }
