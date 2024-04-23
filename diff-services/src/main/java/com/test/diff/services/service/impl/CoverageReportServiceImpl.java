@@ -34,6 +34,7 @@ import jdk.internal.org.objectweb.asm.ClassVisitor;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.jacoco.agent.rt.internal_8cf7cdb.local.LocalApiServer;
 import org.jacoco.cli.internal.asm.Opcodes;
 import org.jacoco.cli.internal.core.tools.ExecFileLoader;
 import org.springframework.beans.factory.annotation.Value;
@@ -507,56 +508,9 @@ public class CoverageReportServiceImpl extends ServiceImpl<CoverageReportMapper,
             return;
         }
         for (ClassInfo classInfo : classInfos) {
-            appendLambdaMethod(classInfo.getClassName(), classInfo.getMethodInfos(), classFileDir);
+            LocalApiServer.appendLambdaMethod(classInfo.getClassName(), classInfo.getMethodInfos(), classFileDir);
         }
     }
-
-    @SneakyThrows
-    private List<MethodInfo> appendLambdaMethod(String className, List<MethodInfo> diffMethods, String timestampClassDirPath) {
-        String branchClassFilePath = timestampClassDirPath + File.separator + className.replace("/", File.separator) + ".class";
-        if (!cn.hutool.core.io.FileUtil.exist(branchClassFilePath)) {
-            return diffMethods;
-        }
-        byte[] bytecode = Files.readAllBytes(Paths.get(branchClassFilePath));
-        // 使用 ASM 解析字节码
-        ClassReader classReader = new ClassReader(bytecode);
-        ClassVisitor classVisitor = new ClassVisitor(Opcodes.ASM5) {
-            @Override
-            public jdk.internal.org.objectweb.asm.MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
-                String prefix = "lambda$";
-                if (name.startsWith(prefix)) {
-                    String methodName = name.substring(prefix.length());
-                    int idx = methodName.indexOf("$");
-                    if (idx > -1) {
-                        methodName = methodName.substring(0, idx);
-                    }
-                    String finalMethodName = methodName;
-                    MethodInfo hostMethodInfo = diffMethods.stream().filter(methodInfo -> methodInfo.getMethodName().equals(finalMethodName)).findFirst().orElse(null);
-                    if (hostMethodInfo != null) {
-                        String param = "";
-                        if (!descriptor.contains("()")) {
-                            String[] params = descriptor.substring(1, descriptor.indexOf(")")).split(";");
-                            for (String s : params) {
-                                if (s == null || s.trim().equalsIgnoreCase("")) {
-                                    continue;
-                                }
-                                idx = s.lastIndexOf("/");
-                                if (idx > -1) {
-                                    s = s.substring(idx + 1);
-                                }
-                                param = param + s + ";";
-                            }
-                        }
-                        diffMethods.add(MethodInfo.builder().methodName(name).params(param).md5(hostMethodInfo.getMd5() + name).diffType(hostMethodInfo.getDiffType()).build());
-                    }
-                }
-                return super.visitMethod(access, name, descriptor, signature, exceptions);
-            }
-        };
-        classReader.accept(classVisitor, ClassReader.EXPAND_FRAMES);
-        return diffMethods;
-    }
-
 }
 
 

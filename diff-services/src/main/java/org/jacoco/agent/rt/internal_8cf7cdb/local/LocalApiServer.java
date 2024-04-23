@@ -123,6 +123,8 @@ public class LocalApiServer implements HttpHandler, Runnable {
 
     private String localhost;
 
+    private static boolean debug;
+
     LocalApiServer(String root, int port, int filePort, int dumpPort, String sourcePath, String classPath, String workspace, String appName, Boolean refresh, Long refreshInterval, String mergeLevel, String curBranch) {
         this.root = root;
         this.port = port;
@@ -144,6 +146,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
             return null;
         }
         running = true;
+        debug = Boolean.parseBoolean(System.getProperty("coverage.local.debug", "false"));
         String root = System.getProperty("coverage.local.root", System.getProperty("user.home"));
 //        int randomPort = 6000 + new Random().nextInt(1000);
         int port = FileHttpServer.tryPort(Integer.parseInt(System.getProperty("coverage.local.port", "6500")));
@@ -264,12 +267,28 @@ public class LocalApiServer implements HttpHandler, Runnable {
 
     @SneakyThrows
     private static String execCmd(String workspace, String cmd) {
+        File dir = new File(workspace);
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
         String os = System.getProperty("os.name");
         Process process;
         if (os.toLowerCase().contains("windows")) {
-            process = Runtime.getRuntime().exec(new String[]{"cmd", "/c", "cd " + workspace + " && " + cmd});
+            String currentDir = System.getProperty("user.dir");
+            String command = "cd " + workspace + " && " + cmd;
+            if (!currentDir.contains("C:") && workspace.contains("C:")) {
+                command = "C: && cd " + workspace + " && " + cmd;
+            }
+            if (debug) {
+                System.out.println(command);
+            }
+            process = Runtime.getRuntime().exec(new String[]{"cmd", "/c", command});
         } else {
-            process = Runtime.getRuntime().exec(new String[]{"sh", "-c", "cd " + workspace + " | " + cmd});
+            String command = "cd " + workspace + " ; " + cmd;
+            if (debug) {
+                System.out.println(command);
+            }
+            process = Runtime.getRuntime().exec(new String[]{"sh", "-c", command});
         }
         String success = readInput(process.getInputStream());
         String error = readInput(process.getErrorStream());
@@ -492,8 +511,9 @@ public class LocalApiServer implements HttpHandler, Runnable {
             if (!isMasterCheckout) {    // only once
                 File masterSourceFile = new File(masterCloneSourceDir);
                 String masterCloneSourceGitDir;
-                if (masterSourceFile.exists()) {
-                    masterCloneSourceGitDir = Objects.requireNonNull(masterSourceFile.listFiles())[0].getAbsolutePath();
+                if (masterSourceFile.exists() && Objects.requireNonNull(masterSourceFile.listFiles()).length > 0) {
+                    File masterCloneSourceGitDirFile = Arrays.stream(masterSourceFile.listFiles()).filter(File::isDirectory).findFirst().orElse(null);
+                    masterCloneSourceGitDir = Objects.requireNonNull(masterCloneSourceGitDirFile).getAbsolutePath();
                     execCmd(masterCloneSourceGitDir, "git fetch origin");
                     execCmd(masterCloneSourceGitDir, "git pull origin master");
                 } else {
@@ -503,7 +523,8 @@ public class LocalApiServer implements HttpHandler, Runnable {
                         cloneUrl = appendGitUserPass(gitUrl, gitUser, gitPass);
                     }
                     execCmd(masterCloneSourceDir, "git clone " + cloneUrl);
-                    masterCloneSourceGitDir = Objects.requireNonNull(masterSourceFile.listFiles())[0].getAbsolutePath();
+                    File masterCloneSourceGitDirFile = Arrays.stream(masterSourceFile.listFiles()).filter(File::isDirectory).findFirst().orElse(null);
+                    masterCloneSourceGitDir = Objects.requireNonNull(masterCloneSourceGitDirFile).getAbsolutePath();
                     execCmd(masterCloneSourceGitDir, "git fetch origin");
                 }
                 String commonCommitId = getCommonCommitId(this.workspace, masterCloneSourceGitDir);
@@ -627,7 +648,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
         /*
          * post to server
          */
-        String requestUrl = "http://test-arch-framework-admin.intramirror.cn/api/rpc/coverage/local?sign + " + sign;
+        String requestUrl = "http://127.0.0.1:8888/api/rpc/coverage/local?sign=" + sign;
         List<Object> body = new LinkedList<>();
         body.add(this.toString());
         String resp = HttpUtil.post(requestUrl, JSONUtil.toJsonPrettyStr(body));
@@ -749,9 +770,16 @@ public class LocalApiServer implements HttpHandler, Runnable {
         return ClassInfo.builder().className(className).packageName(packageName).diffType(DiffResultTypeEnum.MODIFY).methodInfos(diffMethods).build();
     }
 
+
     @SneakyThrows
-    private List<MethodInfo> appendLambdaMethod(String className, List<MethodInfo> diffMethods, String timestampClassDirPath) {
+    public static List<MethodInfo> appendLambdaMethod(String className, List<MethodInfo> diffMethods, String timestampClassDirPath) {
+        if (diffMethods == null) {
+            return diffMethods;
+        }
         String branchClassFilePath = timestampClassDirPath + File.separator + className.replace("/", File.separator) + ".class";
+        if (!cn.hutool.core.io.FileUtil.exist(branchClassFilePath)) {
+            return diffMethods;
+        }
         byte[] bytecode = Files.readAllBytes(Paths.get(branchClassFilePath));
         // 使用 ASM 解析字节码
         ClassReader classReader = new ClassReader(bytecode);
@@ -766,7 +794,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
                         methodName = methodName.substring(0, idx);
                     }
                     String finalMethodName = methodName;
-                    MethodInfo hostMethodInfo = diffMethods.stream().filter(methodInfo -> methodInfo.getMethodName().equals(finalMethodName)).findFirst().orElse(null);
+                    MethodInfo hostMethodInfo = diffMethods.stream().filter(methodInfo -> methodInfo.getMethodName() != null && methodInfo.getMethodName().equals(finalMethodName)).findFirst().orElse(null);
                     if (hostMethodInfo != null) {
                         String param = "";
                         if (!descriptor.contains("()")) {
@@ -1060,7 +1088,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
     @SneakyThrows
     @Override
     public void run() {
-        Thread.sleep(90 * 1000L);
+        Thread.sleep(60 * 1000L);
         while (true) {
             try {
                 Thread.sleep(refreshInterval);

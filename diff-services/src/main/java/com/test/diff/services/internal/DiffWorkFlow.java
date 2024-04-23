@@ -105,8 +105,8 @@ public class DiffWorkFlow {
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
             List<ClassInfo> classInfos = futures.stream().map(CompletableFuture::join).filter(Objects::nonNull).collect(Collectors.toList());
+            classInfos = classInfos.stream().filter(classInfo -> !classInfo.getClassName().contains("src/test/java/")).collect(Collectors.toList());
             log.info("计算最终差异类个数：{}", classInfos.size());
-
             return classInfos;
         } finally {
             if (baseGit != null) baseGit.close();
