@@ -3,6 +3,7 @@ package org.jacoco.agent.rt.internal_8cf7cdb;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import org.jacoco.agent.rt.internal_8cf7cdb.local.LocalApiServer;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -153,12 +154,18 @@ public class FileHttpServer implements HttpHandler {
             path = "/" + path;
         }
         String query = httpExchange.getRequestURI().getQuery();
+        if (query == null) {
+            query = "";
+        }
         Map<String, String> queryMap = new HashMap<>();
-        if (query != null) {
+        if (!query.equals("")) {
             Arrays.stream(query.split("&")).forEach(s -> {
                 String[] arr = s.split("=");
                 queryMap.put(arr[0], arr[1]);
             });
+        }
+        if (path.contains("/report/") && path.contains(".html") && !query.contains("localReport=true") && localFlag) {
+            LocalApiServer.manualExecAndPush();
         }
 
         String dir = queryMap.getOrDefault("dir", root);
@@ -186,7 +193,8 @@ public class FileHttpServer implements HttpHandler {
                     path = path.substring(0, path.length() - 1);
                 }
                 String finalPath = path;
-                files = Arrays.stream(Objects.requireNonNull(file.listFiles())).map(file1 -> "<a href='" + finalPath + "/" + file1.getName() + "?" + query + "'>" + file1.getName() + "</a>").collect(Collectors.joining("<br/>"));
+                String finalQuery = query;
+                files = Arrays.stream(Objects.requireNonNull(file.listFiles())).map(file1 -> "<a href='" + finalPath + "/" + file1.getName() + "?" + finalQuery + "'>" + file1.getName() + "</a>").collect(Collectors.joining("<br/>"));
                 files = "<html>" + files + "</html>";
                 httpExchange.getResponseHeaders().add("Content-Type", "text/html; charset=utf-8");
             } else {

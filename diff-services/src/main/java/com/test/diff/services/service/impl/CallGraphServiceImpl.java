@@ -79,6 +79,7 @@ public class CallGraphServiceImpl implements CallGraphService {
             }
 
             CallGraphUtils.create(dirPath, service, dbFile, jarPaths);
+            FileUtil.del(jarFile);
             break;
         }
     }

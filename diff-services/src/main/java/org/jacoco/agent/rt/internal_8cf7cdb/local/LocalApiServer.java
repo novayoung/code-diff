@@ -125,6 +125,8 @@ public class LocalApiServer implements HttpHandler, Runnable {
 
     private static boolean debug;
 
+    private static LocalApiServer thisInstance;
+
     LocalApiServer(String root, int port, int filePort, int dumpPort, String sourcePath, String classPath, String workspace, String appName, Boolean refresh, Long refreshInterval, String mergeLevel, String curBranch) {
         this.root = root;
         this.port = port;
@@ -157,7 +159,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
         String app = System.getProperty("coverage.local.app");
         String sourcePath = System.getProperty("coverage.local.source", "");
         String classPath = System.getProperty("coverage.local.class", "");
-        Boolean refresh =  Boolean.valueOf(System.getProperty("coverage.local.refresh", "true"));
+        Boolean refresh =  Boolean.valueOf(System.getProperty("coverage.local.refresh", "false"));
         Long refreshInterval =  Long.valueOf(System.getProperty("coverage.local.refresh.interval", "5000"));
         String mergeLevel = System.getProperty("coverage.local.mergeLevel", "method");
         String curBranch = execCmd(workspace, "git branch --show-current");
@@ -249,7 +251,39 @@ public class LocalApiServer implements HttpHandler, Runnable {
         server.setExecutor(executor);
         server.createContext("/", localApiServer);
         server.start();
+        thisInstance = localApiServer;
+        clearExpiredDir(localApiServer);
         return localApiServer;
+    }
+
+    private static void clearExpiredDir(LocalApiServer localApiServer) {
+        String dir = localApiServer.root + File.separator + localApiServer.baseDir + File.separator + localApiServer.appName +File.separator + localApiServer.curBranch;
+        File dirFile = new File(dir);
+        if (!dirFile.exists()) {
+            return;
+        }
+        File[] listFile = dirFile.listFiles();
+        if (listFile == null) {
+            return;
+        }
+        for (File child : listFile) {
+            if (!child.isDirectory()) {
+                continue;
+            }
+            long timestamp;
+            try {
+                timestamp = Long.parseLong(child.getName());
+            } catch (Exception e) {
+                continue;
+            }
+            if (timestamp > 0 && timestamp < System.currentTimeMillis()) {
+                try {
+                    deleteFolder(child);
+                } catch (Exception e) {
+
+                }
+            }
+        }
     }
 
     private static String guessWs() {
@@ -1088,7 +1122,10 @@ public class LocalApiServer implements HttpHandler, Runnable {
     @SneakyThrows
     @Override
     public void run() {
-        Thread.sleep(60 * 1000L);
+        Thread.sleep(30 * 1000L);
+        if (!refresh) {
+            return;
+        }
         while (true) {
             try {
                 Thread.sleep(refreshInterval);
@@ -1097,15 +1134,28 @@ public class LocalApiServer implements HttpHandler, Runnable {
             }
             try {
                 if (this.appName == null || !refresh) {
-                    continue;
+//                    continue;
+                    return;
                 }
-                exec(null);
-                push();
+                execAndPush();
                 //System.out.println(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.sss").format(new Date()) + ": auto refresh coverage report");
             } catch (Exception e) {
                 e.printStackTrace();
             }
         }
+    }
+
+    public synchronized static void manualExecAndPush() {
+        if (thisInstance.refresh) {
+            return;
+        }
+        execAndPush();
+    }
+
+    @SneakyThrows
+    public synchronized static void execAndPush() {
+        thisInstance.exec(null);
+        thisInstance.push();
     }
 
     private long lastPushTimestamp;
@@ -1117,7 +1167,7 @@ public class LocalApiServer implements HttpHandler, Runnable {
             return;
         }
         try {
-            Integer coverageRate = parseCoverage(String.format("http://127.0.0.1:%s/code-coverage/%s/%s/report/index.html", this.filePort, this.appName, this.curBranch));
+            Integer coverageRate = parseCoverage(String.format("http://127.0.0.1:%s/code-coverage/%s/%s/report/index.html?localReport=true", this.filePort, this.appName, this.curBranch));
             if (coverageRate == null) {
                 return;
             }
